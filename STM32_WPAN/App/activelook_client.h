@@ -25,6 +25,7 @@
 #define ACTIVELOOK_CLIENT_H
 
 #include <stdint.h>
+#include <stdbool.h>
 #include "ble_types.h"
 
 typedef struct
@@ -50,6 +51,15 @@ uint8_t FS_ActiveLook_Client_IsReady(void);
 /* Write data to Rx characteristic (WriteWithoutResp) */
 tBleStatus FS_ActiveLook_Client_WriteWithoutResp(const uint8_t *data, uint16_t length);
 
+/* Self-heal watchdog inputs: how long CB9 STOP has been asserted (ms, 0 = not
+ * stopped) and how many consecutive writes have failed since the last success. */
+uint32_t FS_ActiveLook_Client_StopStuckMs(void);
+uint16_t FS_ActiveLook_Client_WriteFailStreak(void);
+
+/* Deliberately drop the link (aci_gap_terminate); the normal disconnection
+ * event then resets the client/FSM and restarts scanning (self-heal). */
+void FS_ActiveLook_Client_ForceDisconnect(void);
+
 /**
  * @brief Enable battery notifications for the standard Battery Service.
  *        This writes 0x01 to the CCC descriptor of the Battery Level char.
@@ -64,5 +74,25 @@ tBleStatus FS_ActiveLook_Client_EnableBatteryNotifications(void);
  * @return uint8_t
  */
 uint8_t FS_ActiveLook_Client_GetBatteryLevel(void);
+
+/**
+ * @brief Reset all client state on disconnect. Idempotent.
+ *        Clears rxCharHandle, discState→IDLE, connHandle→invalid,
+ *        rxCharFound, linkUp, lastCtrlByte. Must be called from the
+ *        HCI_DISCONNECTION_COMPLETE handler (EndDevice branch).
+ */
+void FS_ActiveLook_Client_OnDisconnect(void);
+
+/**
+ * @brief Flow-control gate. Returns true only when the link is up AND
+ *        the last control byte on ...CB9 == AL_FLOW_OK. Wraps AL_FlowCanSend.
+ */
+bool FS_ActiveLook_Client_CanSend(void);
+
+/**
+ * @brief Return the negotiated ATT MTU (stored from ACI_ATT_EXCHANGE_MTU_RESP).
+ *        Returns 23 (BLE default) until an exchange has been completed.
+ */
+uint16_t FS_ActiveLook_Client_GetMTU(void);
 
 #endif /* ACTIVELOOK_CLIENT_H */

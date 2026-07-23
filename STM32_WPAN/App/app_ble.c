@@ -45,7 +45,9 @@
 #include "common.h"
 #include "state.h"
 #include "activelook_client.h"
+#include "activelook.h"
 #include "config.h"
+#include "engo_bind.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -260,6 +262,8 @@ uint8_t request_pairing = 0;
 
 /* BD Address of device to be connected once discovered */
 tBDAddr P2P_SERVER1_BDADDR;
+/* Address type of device to be connected (0=public, 1=random, etc.) */
+static uint8_t P2P_SERVER1_ADDR_TYPE = GAP_PUBLIC_ADDR;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -500,6 +504,11 @@ SVCCTL_UserEvtFlowStatus_t SVCCTL_App_Notification(void *p_Pckt)
         APP_DBG_MSG("\r\n\r** DISCONNECTION EVENT OF END DEVICE 1 \n\r");
         BleApplicationContext.EndDevice_Connection_Status[0] = APP_BLE_IDLE;
         BleApplicationContext.connectionHandleEndDevice1 = 0xFFFF;
+
+        /* Reset GATT client and app FSM, then restart discovery */
+        FS_ActiveLook_Client_OnDisconnect();
+        FS_ActiveLook_OnDisconnect();
+        UTIL_SEQ_SetTask(1 << CFG_TASK_START_SCAN_ID, CFG_SCH_PRIO_0);
       }
 
       if (p_disconnection_complete_event->Connection_Handle == BleApplicationContext.connectionHandleCentral)
@@ -600,82 +609,150 @@ SVCCTL_UserEvtFlowStatus_t SVCCTL_App_Notification(void *p_Pckt)
           adv_report_data = (uint8_t*)(&le_advertising_event->Advertising_Report[0].Length_Data) + 1;
           k = 0;
 
-          // Define the target device name we are looking for
-          char targetDeviceName[14];
-          snprintf(targetDeviceName, sizeof(targetDeviceName),
-        		   "ENGO 2 %.*s", 6, FS_Config_Get()->al_id);
-          const size_t targetDeviceNameLen = strlen(targetDeviceName);
+          /*
+           * ActiveLook command service UUID (little-endian):
+           *   0783B03E-8535-B5A0-7140-A304D2495CB7
+           * LE bytes: B7 5C 49 D2 04 A3 40 71 A0 B5 35 85 3E B0 83 07
+           */
+          static const uint8_t activelook_svc_uuid[16] = {
+              0xB7, 0x5C, 0x49, 0xD2, 0x04, 0xA3, 0x40, 0x71,
+              0xA0, 0xB5, 0x35, 0x85, 0x3E, 0xB0, 0x83, 0x07
+          };
 
-          // Flags to track if we found the required data within *this specific* advertising report
-          uint8_t foundMfgData = 0; // Flag for correct manufacturer data
-          uint8_t foundDeviceName = 0; // Flag for correct device name
+          /* Flags to track match within this advertising report */
+          uint8_t foundUUID = 0;   /* ActiveLook service UUID found */
+          uint8_t foundName = 0;   /* Name prefix "ENGO" found */
+          char    candSerial[FS_ENGO_SERIAL_LEN + 1] = {0}; /* trailing 6 chars of name = ENGO serial */
+          uint8_t haveSerial = 0;  /* candSerial is populated */
 
-          /* search AD TYPE 0x09 (Complete Local Name) */
-          /* search AD Type 0x02 (16 bits UUIDS) */
-          if (event_type == ADV_IND)
+          /* Process both ADV_IND and SCAN_RSP so service UUID in scan response is caught */
+          if (event_type == ADV_IND || event_type == SCAN_RSP)
           {
             while(k < event_data_size)
             {
               adlength = adv_report_data[k];
+              if (adlength == 0) break; /* malformed — stop */
               adtype = adv_report_data[k + 1];
-              if (adtype == AD_TYPE_MANUFACTURER_SPECIFIC_DATA)
-              {
-                /* The payload starts at adv_report_data[k + 2], and its length is (adlength - 1). */
-                const uint8_t *mfg_data = &adv_report_data[k + 2];
-                uint8_t mfg_len = adlength - 1; // total bytes in manufacturer data
 
-                /* The ActiveLook doc says we should see 0x08F2 at the end.
-                   For example: 0xDAFA08F2 or some variation. So let's do: */
-                if (mfg_len >= 2)
+              if (adtype == AD_TYPE_128_BIT_SERV_UUID ||
+                  adtype == AD_TYPE_128_BIT_SERV_UUID_CMPLT_LIST)
+              {
+                /* Each UUID is 16 bytes; there may be multiple */
+                uint8_t uuid_data_len = adlength - 1;
+                const uint8_t *uuid_data = &adv_report_data[k + 2];
+                uint8_t ui;
+                for (ui = 0; ui + 16 <= uuid_data_len; ui += 16)
                 {
-                  /* Check the last two bytes of manufacturer data. */
-                  uint16_t last2 = (mfg_data[mfg_len - 2] << 8) | mfg_data[mfg_len - 1];
-                  if (last2 == 0x08F2)
+                  if (memcmp(&uuid_data[ui], activelook_svc_uuid, 16) == 0)
                   {
-                    APP_DBG_MSG("-- Found ActiveLook device (mfg data ends with 0x08F2)\n\r");
-                    foundMfgData = 1; // Set flag indicating manufacturer data is correct
+                    APP_DBG_MSG("-- Found ActiveLook service UUID in adv data\n\r");
+                    foundUUID = 1;
+                    break;
                   }
                 }
               }
-              else if (adtype == AD_TYPE_COMPLETE_LOCAL_NAME || adtype == AD_TYPE_SHORTENED_LOCAL_NAME)
+              else if (adtype == AD_TYPE_COMPLETE_LOCAL_NAME ||
+                       adtype == AD_TYPE_SHORTENED_LOCAL_NAME)
               {
                 const uint8_t *name_data = &adv_report_data[k + 2];
                 uint8_t name_len = adlength - 1;
 
                 APP_DBG_MSG("-- Found Device Name: '");
-                for(int i=0; i<name_len; i++) { APP_DBG_MSG("%c", name_data[i]); }
+                {
+                  uint8_t ni;
+                  for (ni = 0; ni < name_len; ni++) { APP_DBG_MSG("%c", name_data[ni]); }
+                }
                 APP_DBG_MSG("'\n\r");
 
-                // Compare the found name with the target name
-                if ((name_len == targetDeviceNameLen) &&
-                		(memcmp(name_data, targetDeviceName, targetDeviceNameLen) == 0))
+                /* Capture the trailing 6 chars of the name = ENGO Customer Serial
+                 * (e.g. "ENGO 3 123456" -> "123456"). Per the ActiveLook API the
+                 * serial is the last 6 chars of the COMPLETE 16-char name; a
+                 * SHORTENED name is truncated at the tail, so its last 6 chars are
+                 * NOT the serial — never capture from it (a wrong capture would be
+                 * permanently auto-bound to engo3.txt). */
+                if (adtype == AD_TYPE_COMPLETE_LOCAL_NAME &&
+                    name_len >= FS_ENGO_SERIAL_LEN)
                 {
-                   APP_DBG_MSG("-- Device Name matches target '%s'\n\r", targetDeviceName);
-                   foundDeviceName = 1; // Set flag indicating device name is correct
+                  uint8_t si;
+                  for (si = 0; si < FS_ENGO_SERIAL_LEN; si++)
+                    candSerial[si] = (char)name_data[name_len - FS_ENGO_SERIAL_LEN + si];
+                  candSerial[FS_ENGO_SERIAL_LEN] = '\0';
+                  haveSerial = 1;
+                }
+
+                /* Case-insensitive match of known ActiveLook/ENGO advertised-name
+                 * prefixes. ENGO 2/3 advertise "ENGO ..."; other ActiveLook devices
+                 * use "AL-"/"AL "/"ActiveLook"/"A.Look". The name may live only in the
+                 * scan response, which is why we run an active scan and parse both. */
+                {
+                  static const char *al_prefixes[] = { "ENGO", "AL-", "AL ", "ACTIVELOOK", "A.LOOK" };
+                  uint8_t pi;
+                  for (pi = 0; pi < 5 && !foundName; pi++)
+                  {
+                    const char *pfx = al_prefixes[pi];
+                    uint8_t plen = (uint8_t)strlen(pfx);
+                    if (name_len >= plen)
+                    {
+                      uint8_t mi, ok = 1;
+                      for (mi = 0; mi < plen; mi++)
+                      {
+                        uint8_t c = name_data[mi];
+                        if (c >= 'a' && c <= 'z') c = (uint8_t)(c - 32); /* to upper */
+                        if (c != (uint8_t)pfx[mi]) { ok = 0; break; }
+                      }
+                      if (ok) { foundName = 1; APP_DBG_MSG("-- Name prefix '%s' matched\n\r", pfx); }
+                    }
+                  }
                 }
               }
 
               k += adlength + 1;
             } /* end while(k < event_data_size) */
 
-            // Check if *both* flags are set after processing all AD structures in this report
-            if (foundMfgData && foundDeviceName)
+            /* Decide whether to accept this device.
+             *  - BOUND   (engo3.txt present): must be an ActiveLook device (UUID or
+             *            name prefix) AND its serial (trailing 6 chars of the
+             *            advertised name) must equal the saved one. The serial
+             *            NARROWS the ActiveLook filter, it does not replace it —
+             *            otherwise any BLE device whose name happens to end in
+             *            those 6 chars would be connected to.
+             *  - UNBOUND (no engo3.txt): first ActiveLook device wins (UUID or
+             *            name prefix), and we remember its serial to persist once
+             *            the link is up (auto-bind on first ever connect). */
+            uint8_t accept = 0;
+            if (BleApplicationContext.EndDevice1Found == 0x00)
             {
-                APP_DBG_MSG("-- Found matching ENGO 2 device!\n\r");
-                BleApplicationContext.EndDevice1Found = 0x01;
-                // Store the BD Address of this device
-                P2P_SERVER1_BDADDR[0] = le_advertising_event->Advertising_Report[0].Address[0];
-                P2P_SERVER1_BDADDR[1] = le_advertising_event->Advertising_Report[0].Address[1];
-                P2P_SERVER1_BDADDR[2] = le_advertising_event->Advertising_Report[0].Address[2];
-                P2P_SERVER1_BDADDR[3] = le_advertising_event->Advertising_Report[0].Address[3];
-                P2P_SERVER1_BDADDR[4] = le_advertising_event->Advertising_Report[0].Address[4];
-                P2P_SERVER1_BDADDR[5] = le_advertising_event->Advertising_Report[0].Address[5];
-
-                APP_DBG_MSG("   Address: %02X:%02X:%02X:%02X:%02X:%02X\n\r",
-                            P2P_SERVER1_BDADDR[5], P2P_SERVER1_BDADDR[4], P2P_SERVER1_BDADDR[3],
-                            P2P_SERVER1_BDADDR[2], P2P_SERVER1_BDADDR[1], P2P_SERVER1_BDADDR[0]);
+              if (FS_EngoBind_IsBound())
+                accept = ((foundUUID || foundName) &&
+                          haveSerial && FS_EngoBind_SerialMatches(candSerial));
+              else
+                accept = (foundUUID || foundName);
             }
-          } /* end if (event_type == ADV_IND) */
+
+            if (accept)
+            {
+              APP_DBG_MSG("-- Found matching ENGO/ActiveLook device!\n\r");
+              BleApplicationContext.EndDevice1Found = 0x01;
+
+              /* Unbound first connect: stash the serial to learn after link-up. */
+              if (!FS_EngoBind_IsBound() && haveSerial)
+                FS_EngoBind_NotePending(candSerial);
+
+              /* Store BD Address and Address_Type from the advertising report */
+              P2P_SERVER1_BDADDR[0] = le_advertising_event->Advertising_Report[0].Address[0];
+              P2P_SERVER1_BDADDR[1] = le_advertising_event->Advertising_Report[0].Address[1];
+              P2P_SERVER1_BDADDR[2] = le_advertising_event->Advertising_Report[0].Address[2];
+              P2P_SERVER1_BDADDR[3] = le_advertising_event->Advertising_Report[0].Address[3];
+              P2P_SERVER1_BDADDR[4] = le_advertising_event->Advertising_Report[0].Address[4];
+              P2P_SERVER1_BDADDR[5] = le_advertising_event->Advertising_Report[0].Address[5];
+              P2P_SERVER1_ADDR_TYPE  = le_advertising_event->Advertising_Report[0].Address_Type;
+
+              APP_DBG_MSG("   Address (%s): %02X:%02X:%02X:%02X:%02X:%02X\n\r",
+                          P2P_SERVER1_ADDR_TYPE == 0 ? "Public" : "Random",
+                          P2P_SERVER1_BDADDR[5], P2P_SERVER1_BDADDR[4], P2P_SERVER1_BDADDR[3],
+                          P2P_SERVER1_BDADDR[2], P2P_SERVER1_BDADDR[1], P2P_SERVER1_BDADDR[0]);
+            }
+          } /* end if (event_type == ADV_IND || event_type == SCAN_RSP) */
           break;
 
         default:
@@ -760,6 +837,12 @@ SVCCTL_UserEvtFlowStatus_t SVCCTL_App_Notification(void *p_Pckt)
               {
                 APP_DBG_MSG("-- Setting task CFG_TASK_CONN_DEV_1_ID\n\r");
                 UTIL_SEQ_SetTask(1 << CFG_TASK_CONN_DEV_1_ID, CFG_SCH_PRIO_0);
+              }
+              else if (BleApplicationContext.EndDevice_Connection_Status[0] != APP_BLE_CONNECTED)
+              {
+                /* No matching device found — re-arm scanning so glasses found later */
+                APP_DBG_MSG("-- No ENGO device found, re-scheduling scan\n\r");
+                UTIL_SEQ_SetTask(1 << CFG_TASK_START_SCAN_ID, CFG_SCH_PRIO_0);
               }
 #if (CFG_P2P_DEMO_MULTI != 0)
               /* USER CODE BEGIN EVT_BLUE_GAP_PROCEDURE_COMPLETE_Multi */
@@ -852,6 +935,8 @@ SVCCTL_UserEvtFlowStatus_t SVCCTL_App_Notification(void *p_Pckt)
         /* USER CODE BEGIN BLUE_EVT */
         case ACI_GATT_TX_POOL_AVAILABLE_VSEVT_CODE:
           Custom_APP_TxPoolAvailableNotification();
+          /* Resume a half-sent ActiveLook HUD frame as soon as buffers free up */
+          FS_ActiveLook_TxPoolAvailable();
           break;
         /* USER CODE END BLUE_EVT */
       }
@@ -1697,18 +1782,19 @@ static void Connect_Request(void)
 {
   tBleStatus result;
   APP_DBG_MSG("\r\n\r** CREATE CONNECTION TO END DEVICE 1 **  \r\n\r");
-  if (BleApplicationContext.EndDevice_Connection_Status[0] != APP_BLE_CONNECTED)
+  if (BleApplicationContext.EndDevice_Connection_Status[0] != APP_BLE_CONNECTED &&
+      BleApplicationContext.EndDevice_Connection_Status[0] != APP_BLE_CONNECTING)
   {
     /* USER CODE BEGIN APP_BLE_CONNECTED_SUCCESS_END_DEVICE_1 */
 
     /* USER CODE END APP_BLE_CONNECTED_SUCCESS_END_DEVICE_1 */
     result = aci_gap_create_connection(SCAN_P,
                                        SCAN_L,
-                                       GAP_PUBLIC_ADDR,
+                                       P2P_SERVER1_ADDR_TYPE,
                                        P2P_SERVER1_BDADDR,
                                        CFG_BLE_ADDRESS_TYPE,
-                                       0x0006,
-                                       0x0006,
+                                       0x000C,   /* conn interval min = 15 ms (ActiveLook prefers 15-30) */
+                                       0x0018,   /* conn interval max = 30 ms */
                                        0,
                                        SUPERV_TIMEOUT,
                                        CONN_L1,
@@ -1728,7 +1814,9 @@ static void Connect_Request(void)
 
       /* USER CODE END BLE_STATUS_END_DEVICE_1_FAILED */
       BleApplicationContext.EndDevice_Connection_Status[0] = APP_BLE_IDLE;
-      APP_DBG_MSG("==> Connect_Request Failed \n\r");
+      APP_DBG_MSG("==> Connect_Request Failed, re-scheduling scan\n\r");
+      /* Re-arm scanning so we retry when glasses become available */
+      UTIL_SEQ_SetTask(1 << CFG_TASK_START_SCAN_ID, CFG_SCH_PRIO_0);
     }
   }
 

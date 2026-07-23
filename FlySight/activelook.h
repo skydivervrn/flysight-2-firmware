@@ -32,4 +32,12 @@ typedef enum {
 void FS_ActiveLook_Init(void);
 void FS_ActiveLook_DeInit(void);
 
+/* Called on BLE disconnect: resets the app FSM to idle and disarms the
+ * repeating update timer so no writes happen until re-discovery. */
+void FS_ActiveLook_OnDisconnect(void);
+
+/* Called from app_ble.c on ACI_GATT_TX_POOL_AVAILABLE — resumes a HUD frame
+ * that was paused mid-send when the CPU2 TX pool was momentarily full. */
+void FS_ActiveLook_TxPoolAvailable(void);
+
 #endif /* ACTIVELOOK_H_ */

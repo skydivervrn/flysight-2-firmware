@@ -20,3 +20,26 @@ Tests/*.exe
 
 # Claude Code files
 .claude/
+
+# ENGO project local
+Deploy/.venv/
+Deploy/Firmware_As_Built/*.bin
+Deploy/Firmware_To_Deploy/*.sfb
+Deploy/__pycache__/
+
+# CLI build (hand Makefile) artifacts + host-test binaries
+build/
+Tests/test_activelook
+Tests/test_time
+Tests/*.dSYM/
+
+# Local working notes / device-specific runbooks (kept out of the public repo)
+CLAUDE.md
+Docs/ENGO_AUDIT.md
+Docs/ENGO_SPEC.md
+Docs/ENGO_STATUS.md
+Docs/ECONOMY_MODE_PLAN.md
+Docs/FLIGHT_DETECTION_POWER_RESEARCH.md
+Deploy/STEP1_RUNBOOK.md
+!Deploy/Firmware_As_Built/.gitkeep
+!Deploy/Firmware_To_Deploy/.gitkeep

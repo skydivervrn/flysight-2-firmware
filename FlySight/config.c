@@ -253,7 +253,7 @@ static const char defaultConfig[] =
 		"AL_Mode:       1 ; ActiveLook mode\n"
 		"                     0 = Not active\n"
 		"                     1 = Default mode\n"
-		"AL_Rate:    1000 ; ActiveLook rate (ms)\n"
+		"AL_Rate:     500 ; ActiveLook rate (ms)\n"
 		"\n"
 		"AL_Line:       0 ; ActiveLook line value\n"
 		"                 ;   0 = Horizontal speed\n"
@@ -357,7 +357,7 @@ void FS_Config_Init(void)
 
 	*(config.al_id) = '\0';
 	config.al_mode        = 1;
-	config.al_rate        = 1000;
+	config.al_rate        = 500;   /* 2 Hz HUD; safe with flow-control pacing */
 	config.num_al_lines   = 0;
 
 	// IMPORTANT: Navigation disabled by default

@@ -30,6 +30,7 @@
 #include "charge.h"
 #include "config.h"
 #include "custom_app.h"
+#include "flight_detect.h"
 #include "gnss.h"
 #include "hum.h"
 #include "imu.h"
@@ -88,6 +89,9 @@ void FS_ActiveControl_Init(void)
 	hasFix = false;
 	rtcUpdated = false;
 	state = FS_CONTROL_ACTIVE;
+
+	// Reset takeoff/flight detector (display + log only; no behaviour change)
+	FS_FlightDetect_Init();
 
 	// Initialize saved GNSS time
 	memset(&savedTime, 0, sizeof(FS_GNSS_Time_t));
@@ -169,6 +173,16 @@ void FS_ActiveControl_DataReady_Callback(void)
 	Custom_GNSS_Update(data);
 
 	hasFix = (data->gpsFix == 3);
+
+	// Takeoff/flight detection — display + single log entry only (phase 1).
+	// Does NOT change logging, sensors, GNSS rate or power: device behaves
+	// exactly as before; this just latches a flag shown on the HUD.
+	if (FS_FlightDetect_Update(data))
+	{
+		FS_Log_WriteEventAsync(
+			"Flight detected: velD=%ld mm/s, hMSL=%ld mm, numSV=%u",
+			(long)data->velD, (long)data->hMSL, (unsigned)data->numSV);
+	}
 }
 
 void FS_ActiveControl_TimeReady_Callback(bool validTime)

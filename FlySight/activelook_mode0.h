@@ -25,6 +25,7 @@
 #define ACTIVELOOK_MODE0_H
 
 #include "activelook.h"
+#include <stdbool.h>
 
 /**
  * Called once when the mode is selected, to reset and load config data.
@@ -42,5 +43,20 @@ FS_ActiveLook_SetupStatus_t FS_ActiveLook_Mode0_Setup(void);
  * Uses the config-based line definitions from FS_ActiveLook_Mode0_Init().
  */
 void FS_ActiveLook_Mode0_Update(void);
+
+/**
+ * Clear the barometric-altitude zero reference so it is re-captured from the
+ * next valid baro sample. Call ONCE per ACTIVE-mode entry (device switch-on),
+ * NOT on glasses reconnect — a mid-flight reconnect must not re-zero altitude.
+ */
+void FS_ActiveLook_Mode0_ResetBaroRef(void);
+
+/**
+ * Resumable-frame API: true while packets of the current HUD frame are still
+ * unsent; DrainFrame sends until done or the CPU2 TX pool pushes back (then
+ * returns false — call again on ACI_GATT_TX_POOL_AVAILABLE or the next tick).
+ */
+bool FS_ActiveLook_Mode0_HasPendingFrame(void);
+bool FS_ActiveLook_Mode0_DrainFrame(void);
 
 #endif /* ACTIVELOOK_MODE0_H */

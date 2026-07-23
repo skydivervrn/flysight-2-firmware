@@ -30,6 +30,7 @@
 #include "audio_control.h"
 #include "baro.h"
 #include "config.h"
+#include "engo_bind.h"
 #include "gnss.h"
 #include "hum.h"
 #include "imu.h"
@@ -77,6 +78,10 @@ void FS_ActiveMode_Init(void)
 
 	if (FS_Config_Get()->al_mode != 0)
 	{
+		/* Load ENGO glasses binding (/engo3.txt) BEFORE BLE discovery starts, so
+		 * the discovery filter knows whether to pin to one serial. */
+		FS_EngoBind_Load();
+
 		/* Initialize ActiveLook interface */
 		FS_ActiveLook_Init();
 	}
@@ -107,6 +112,11 @@ void FS_ActiveMode_Init(void)
 		FS_Log_WriteEvent("%lu/%lu timers used before active mode initialization",
 				HW_TS_CountUsed() - 2, CFG_HW_TS_MAX_NBR_CONCURRENT_TIMER);
 		FS_Log_WriteEvent("----------");
+
+		/* Now that logging is active, record the ENGO bind status loaded earlier
+		 * (FS_EngoBind_Load ran before logging came up, so it couldn't log). */
+		if (FS_Config_Get()->al_mode != 0)
+			FS_EngoBind_LogStatus();
 	}
 
 	if (FS_Config_Get()->enable_audio)

@@ -1,16 +1,22 @@
 # tests/Makefile
 CC = gcc
 CFLAGS = -Wall -Wextra -std=c99 -g
-TARGET = test_time
-SOURCE = test_time.c
 
-$(TARGET): $(SOURCE)
-	$(CC) $(CFLAGS) -o $(TARGET) $(SOURCE)
+TESTS = test_time test_activelook
 
-run: $(TARGET)
-	./$(TARGET)
+all: $(TESTS)
+
+test_time: test_time.c
+	$(CC) $(CFLAGS) -o test_time test_time.c
+
+test_activelook: test_activelook.c ../FlySight/activelook_proto.c ../FlySight/activelook_proto.h
+	$(CC) $(CFLAGS) -o test_activelook test_activelook.c ../FlySight/activelook_proto.c
+
+run: all
+	@echo "=== test_time ===";       ./test_time
+	@echo "=== test_activelook ==="; ./test_activelook
 
 clean:
-	rm -f $(TARGET)
+	rm -f $(TESTS)
 
-.PHONY: run clean
+.PHONY: all run clean

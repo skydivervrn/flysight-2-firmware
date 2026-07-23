@@ -2,9 +2,11 @@
 #include "activelook.h"
 #include "activelook_client.h"
 #include "activelook_mode0.h"
+#include "activelook_proto.h"
 #include "app_common.h"
 #include "config.h"
 #include "dbg_trace.h"
+#include "log.h"
 #include "stm32_seq.h"
 #include <string.h>
 #include <stdio.h>
@@ -90,8 +92,13 @@ static void OnActiveLookDiscoveryComplete(void)
 {
     APP_DBG_MSG("ActiveLook: Discovery complete\n");
 
-    // Initialize state
-    s_state = AL_STATE_CFG_WRITE;
+    /* Select the display mode (was previously done inside AL_STATE_CFG_WRITE). */
+    AL_SelectMode(FS_Config_Get()->al_mode - 1);
+
+    /* Direct-draw rendering: skip cfgWrite/layout-setup/cfgSet entirely (those save
+     * to the glasses' persistent flash and proved unreliable). Go straight to CLEAR
+     * then the periodic UPDATE, which draws with clear+txt every tick. */
+    s_state = AL_STATE_CLEAR;
 
     // Begin updates
     UTIL_SEQ_SetTask(1 << CFG_TASK_FS_ACTIVELOOK_ID, CFG_SCH_PRIO_0);
@@ -117,43 +124,49 @@ static void FS_ActiveLook_Task(void)
 
     case AL_STATE_CFG_WRITE:
     {
-        uint8_t packet[128];
-        uint8_t idx = 0;
+        /* Gate on flow control — skip this tick if not ready */
+        if (!FS_ActiveLook_Client_CanSend()) {
+            break;
+        }
 
-        packet[idx++] = 0xFF;  // start
-        packet[idx++] = 0xD0;  // "cfgWrite" command ID
-        packet[idx++] = 0x00;  // format
-        uint8_t lenPos = idx++;
+        /* Build cfgWrite payload: 12-byte name (padded) + 4-byte version + 4-byte password */
+        uint8_t data[20];
+        uint8_t di = 0;
 
         snprintf(tmp, sizeof(tmp), "FLYSIGHT");
         size_t textLen = strlen(tmp);
-        memcpy(&packet[idx], tmp, textLen);
-        idx += textLen;
+        memcpy(&data[di], tmp, textLen);
+        di += textLen;
 
         while (textLen < 12)
         {
-            packet[idx++] = 0x00; // padding
+            data[di++] = 0x00; // padding
             textLen++;
         }
 
-        packet[idx++] = 0x00;  // version
-        packet[idx++] = 0x00;
-        packet[idx++] = 0x00;
-        packet[idx++] = 0x01;
+        data[di++] = 0x00;  // version
+        data[di++] = 0x00;
+        data[di++] = 0x00;
+        data[di++] = 0x01;
 
-        packet[idx++] = 0x01;  // password
-        packet[idx++] = 0x02;
-        packet[idx++] = 0x03;
-        packet[idx++] = 0x04;
+        data[di++] = 0x01;  // password
+        data[di++] = 0x02;
+        data[di++] = 0x03;
+        data[di++] = 0x04;
 
-        /* Footer byte */
-        packet[idx++] = 0xAA;
+        uint8_t packet[128];
+        size_t plen = AL_BuildFrame(packet, sizeof(packet),
+                                    AL_CMD_CFG_WRITE, data, di);
+        if (plen == 0) {
+            /* Frame build failed — retry next tick (don't advance) */
+            break;
+        }
 
-        /* Fill total length */
-        packet[lenPos] = idx;
-
-        /* Now send it with Write Without Response */
-        FS_ActiveLook_Client_WriteWithoutResp(packet, idx);
+        tBleStatus st = FS_ActiveLook_Client_WriteWithoutResp(packet, (uint16_t)plen);
+        if (st != BLE_STATUS_SUCCESS) {
+            /* Write failed — retry next tick (don't advance) */
+            break;
+        }
 
         /* Get mode from config file */
         AL_SelectMode(FS_Config_Get()->al_mode - 1);
@@ -166,19 +179,20 @@ static void FS_ActiveLook_Task(void)
 
     case AL_STATE_SETUP:
     {
+        /* Gate on flow control — skip this tick if not ready */
+        if (!FS_ActiveLook_Client_CanSend()) {
+            break;
+        }
+
         if (s_currentMode && s_currentMode->setup)
         {
-        	FS_ActiveLook_SetupStatus_t status = s_currentMode->setup();
+            FS_ActiveLook_SetupStatus_t status = s_currentMode->setup();
             if (status == FS_AL_SETUP_DONE)
             {
-                // Once the mode is fully set up, move on
+                /* Once the mode is fully set up, move on */
                 s_state = AL_STATE_CFG_SET;
             }
-            else
-            {
-                // The mode still needs more calls
-                // We'll come back here on next pass
-            }
+            /* else: mode still needs more calls — come back on next pass */
             UTIL_SEQ_SetTask(1 << CFG_TASK_FS_ACTIVELOOK_ID, CFG_SCH_PRIO_0);
         }
         break;
@@ -186,33 +200,39 @@ static void FS_ActiveLook_Task(void)
 
     case AL_STATE_CFG_SET:
     {
-        uint8_t packet[128];
-        uint8_t idx = 0;
+        /* Gate on flow control — skip this tick if not ready */
+        if (!FS_ActiveLook_Client_CanSend()) {
+            break;
+        }
 
-        packet[idx++] = 0xFF;  // start
-        packet[idx++] = 0xD2;  // "cfgSet" command ID
-        packet[idx++] = 0x00;  // format
-        uint8_t lenPos = idx++;
+        /* Build cfgSet payload: 12-byte name (padded) */
+        uint8_t data[12];
+        uint8_t di = 0;
 
         snprintf(tmp, sizeof(tmp), "FLYSIGHT");
         size_t textLen = strlen(tmp);
-        memcpy(&packet[idx], tmp, textLen);
-        idx += textLen;
+        memcpy(&data[di], tmp, textLen);
+        di += textLen;
 
         while (textLen < 12)
         {
-            packet[idx++] = 0x00; // padding
+            data[di++] = 0x00; // padding
             textLen++;
         }
 
-        /* Footer byte */
-        packet[idx++] = 0xAA;
+        uint8_t packet[128];
+        size_t plen = AL_BuildFrame(packet, sizeof(packet),
+                                    AL_CMD_CFG_SET, data, di);
+        if (plen == 0) {
+            /* Frame build failed — retry next tick (don't advance) */
+            break;
+        }
 
-        /* Fill total length */
-        packet[lenPos] = idx;
-
-        /* Now send it with Write Without Response */
-        FS_ActiveLook_Client_WriteWithoutResp(packet, idx);
+        tBleStatus st = FS_ActiveLook_Client_WriteWithoutResp(packet, (uint16_t)plen);
+        if (st != BLE_STATUS_SUCCESS) {
+            /* Write failed — retry next tick (don't advance) */
+            break;
+        }
 
         /* Next config step */
         s_state = AL_STATE_CLEAR;
@@ -222,31 +242,67 @@ static void FS_ActiveLook_Task(void)
 
     case AL_STATE_CLEAR:
     {
-        /* Example "clear" packet:
-         * 0xFF 0x35 0x00 0x05  0xAA
-         * Adjust if your firmware uses a different ID. */
-        uint8_t packet[5];
-        packet[0] = 0xFF;  // start
-        packet[1] = 0x01;  // "clear" command ID
-        packet[2] = 0x00;  // format
-        packet[3] = 5;     // total length
-        packet[4] = 0xAA;  // footer
-        APP_DBG_MSG("ActiveLook: Clearing display...\n");
-        FS_ActiveLook_Client_WriteWithoutResp(packet, sizeof(packet));
+        /* Gate on flow control — skip this tick if not ready */
+        if (!FS_ActiveLook_Client_CanSend()) {
+            break;
+        }
 
-        /* Now go idle. Wait for FS_ActiveLook_GNSS_Update to set us to "update" */
+        uint8_t packet[AL_FRAME_OVERHEAD];  /* clear has no payload: exactly 5 bytes */
+        size_t plen = AL_BuildFrame(packet, sizeof(packet),
+                                    AL_CMD_CLEAR, NULL, 0);
+        if (plen == 0) {
+            /* Frame build failed — retry next tick (don't advance) */
+            break;
+        }
+
+        APP_DBG_MSG("ActiveLook: Clearing display...\n");
+        tBleStatus st = FS_ActiveLook_Client_WriteWithoutResp(packet, (uint16_t)plen);
+        if (st != BLE_STATUS_SUCCESS) {
+            /* Write failed — retry next tick (don't advance) */
+            break;
+        }
+
+        /* Now go idle. Wait for the update timer to fire */
         s_state = AL_STATE_READY;
 
-    	/* Start update timer */
-    	HW_TS_Start(timer_id, FS_Config_Get()->al_rate * 1000 / CFG_TS_TICK_VAL);
+        /* Start update timer */
+        HW_TS_Start(timer_id, FS_Config_Get()->al_rate * 1000 / CFG_TS_TICK_VAL);
         break;
     }
 
     case AL_STATE_READY:
-        /* Idle: no action */
+        /* Idle between ticks — but if a frame is still partially sent (TX pool
+         * pushed back mid-frame), keep draining it. The task is (re)scheduled by
+         * FS_ActiveLook_TxPoolAvailable() as pool space frees up. */
+        if (FS_ActiveLook_Mode0_HasPendingFrame())
+            FS_ActiveLook_Mode0_DrainFrame();
         break;
 
     case AL_STATE_UPDATE:
+        /* Self-heal watchdogs (glidex + official-SDK-informed). A wedged glasses
+         * link shows up as either STOP asserted forever (buffer never drains, or
+         * the resume notification was lost) or writes failing back-to-back. In
+         * both cases dropping the link and rescanning recovers without the user
+         * power-cycling anything. */
+        if (FS_ActiveLook_Client_StopStuckMs() > 6000u)
+        {
+            FS_Log_WriteEventAsync("ENGO self-heal: STOP stuck >6s -> reconnect");
+            FS_ActiveLook_Client_ForceDisconnect();
+            s_state = AL_STATE_READY; /* disconnection event will reset the FSM */
+            break;
+        }
+        if (FS_ActiveLook_Client_WriteFailStreak() >= 8u)
+        {
+            FS_Log_WriteEventAsync("ENGO self-heal: %u failed writes -> reconnect",
+                                   (unsigned)FS_ActiveLook_Client_WriteFailStreak());
+            FS_ActiveLook_Client_ForceDisconnect();
+            s_state = AL_STATE_READY;
+            break;
+        }
+        /* Gate on flow control — defer this tick if not ready */
+        if (!FS_ActiveLook_Client_CanSend()) {
+            break;
+        }
         if (s_currentMode && s_currentMode->update)
             s_currentMode->update();
         s_state = AL_STATE_READY;
@@ -265,10 +321,45 @@ static void FS_ActiveLook_Timer(void)
 }
 
 /*******************************************************************************
+ * Called from app_ble.c on ACI_GATT_TX_POOL_AVAILABLE: CPU2 TX buffers freed
+ * up, so a frame that was paused mid-send can continue NOW (tens of ms after
+ * the push-back) instead of waiting for the next 1 s update tick.
+ ******************************************************************************/
+void FS_ActiveLook_TxPoolAvailable(void)
+{
+    if (FS_ActiveLook_Mode0_HasPendingFrame())
+        UTIL_SEQ_SetTask(1 << CFG_TASK_FS_ACTIVELOOK_ID, CFG_SCH_PRIO_0);
+}
+
+/*******************************************************************************
+ * Called on BLE disconnect (from app_ble.c EndDevice handler).
+ * Resets the app FSM to the idle/disconnected state and disarms the repeating
+ * update timer so no further writes are attempted until re-discovery fires
+ * OnActiveLookDiscoveryComplete again.
+ ******************************************************************************/
+void FS_ActiveLook_OnDisconnect(void)
+{
+    APP_DBG_MSG("ActiveLook: Disconnect — resetting FSM\n");
+
+    /* Stop the periodic update timer (safe to call even when not running) */
+    HW_TS_Stop(timer_id);
+
+    /* Reset FSM to disconnected/idle — OnActiveLookDiscoveryComplete will
+     * restart it cleanly when the glasses reconnect. */
+    s_state = AL_STATE_INIT;
+}
+
+/*******************************************************************************
  * Standard init/deinit for ActiveLook
  ******************************************************************************/
 void FS_ActiveLook_Init(void)
 {
+    /* Re-zero the barometric altitude at every ACTIVE entry ("switch-on"):
+     * the device "off" is SLEEP with RAM retained, so without this the zero
+     * point would survive across sessions. Deliberately NOT done on glasses
+     * reconnect (Mode0_Init) — a mid-flight reconnect must not re-zero. */
+    FS_ActiveLook_Mode0_ResetBaroRef();
+
     /* Register the callback for discovery */
     FS_ActiveLook_Client_RegisterCb(&s_alk_cb);
 
