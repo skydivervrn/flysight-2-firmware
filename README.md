@@ -58,7 +58,7 @@ Firmware is encrypted per batch — a file for the wrong batch is simply
 rejected by the bootloader (harmless, but it won't install).
 
 **2. Download** the `.sfb` for your batch from
-[Releases](../../releases) and verify its checksum against `sha256sums.txt`.
+[the latest release](../../releases/latest) and verify its checksum against `sha256sums.txt`.
 
 **3. Back up your logs** (copy them off the USB drive).
 
