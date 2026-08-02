@@ -52,6 +52,11 @@ void FS_ActiveLook_Mode0_Update(void);
 void FS_ActiveLook_Mode0_ResetBaroRef(void);
 
 /**
+ * Semantic HUD version string (e.g. "0.0.13") for logging/telemetry.
+ */
+const char *FS_ActiveLook_Mode0_HudVersion(void);
+
+/**
  * Resumable-frame API: true while packets of the current HUD frame are still
  * unsent; DrainFrame sends until done or the CPU2 TX pool pushes back (then
  * returns false — call again on ACI_GATT_TX_POOL_AVAILABLE or the next tick).

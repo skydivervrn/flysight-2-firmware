@@ -116,7 +116,10 @@ void FS_ActiveMode_Init(void)
 		/* Now that logging is active, record the ENGO bind status loaded earlier
 		 * (FS_EngoBind_Load ran before logging came up, so it couldn't log). */
 		if (FS_Config_Get()->al_mode != 0)
+		{
 			FS_EngoBind_LogStatus();
+			FS_ActiveLook_LogBootInfo();
+		}
 	}
 
 	if (FS_Config_Get()->enable_audio)

@@ -229,6 +229,7 @@ void FS_ActiveLook_Client_StartDiscovery(uint16_t connectionHandle)
     else
     {
         APP_DBG_MSG("ActiveLook_Client: aci_gatt_exchange_config fail=0x%02X\n", s);
+        FS_Log_WriteEventAsync("ENGO GATT setup failed: MTU req 0x%02X", s);
         g_ctx.discState = DISC_STATE_IDLE;  // stop
     }
 }
@@ -282,6 +283,7 @@ void FS_ActiveLook_Client_EventHandler(void *p_blecore_evt, uint8_t hci_event_ev
                 else
                 {
                     APP_DBG_MSG("ActiveLook_Client: disc_all_primary_services fail=0x%02X\n", s);
+                    FS_Log_WriteEventAsync("ENGO GATT setup failed: svc disc 0x%02X", s);
                     g_ctx.discState = DISC_STATE_IDLE;
                 }
             }
@@ -303,6 +305,7 @@ void FS_ActiveLook_Client_EventHandler(void *p_blecore_evt, uint8_t hci_event_ev
                     else
                     {
                         APP_DBG_MSG("ActiveLook_Client: disc_all_char_of_service fail=0x%02X\n", s);
+                        FS_Log_WriteEventAsync("ENGO GATT setup failed: char disc 0x%02X", s);
                         g_ctx.discState = DISC_STATE_IDLE;
                     }
                 }
@@ -327,6 +330,7 @@ void FS_ActiveLook_Client_EventHandler(void *p_blecore_evt, uint8_t hci_event_ev
                 else
                 {
                     APP_DBG_MSG("ActiveLook_Client: No known services found.\n");
+                    FS_Log_WriteEventAsync("ENGO GATT setup failed: ActiveLook service not found");
                     g_ctx.discState = DISC_STATE_IDLE;
                 }
             }

@@ -32,6 +32,10 @@ typedef enum {
 void FS_ActiveLook_Init(void);
 void FS_ActiveLook_DeInit(void);
 
+/* Write the "ENGO HUD v<ver>, AL_Rate <ms>" boot line to the event log.
+ * Call AFTER FS_Log_Init (FS_ActiveLook_Init runs before logging is up). */
+void FS_ActiveLook_LogBootInfo(void);
+
 /* Called on BLE disconnect: resets the app FSM to idle and disarms the
  * repeating update timer so no writes happen until re-discovery. */
 void FS_ActiveLook_OnDisconnect(void);

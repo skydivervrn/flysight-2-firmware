@@ -92,6 +92,9 @@ static void OnActiveLookDiscoveryComplete(void)
 {
     APP_DBG_MSG("ActiveLook: Discovery complete\n");
 
+    FS_Log_WriteEventAsync("ENGO link ready (MTU %u)",
+                           (unsigned)FS_ActiveLook_Client_GetMTU());
+
     /* Select the display mode (was previously done inside AL_STATE_CFG_WRITE). */
     AL_SelectMode(FS_Config_Get()->al_mode - 1);
 
@@ -352,6 +355,16 @@ void FS_ActiveLook_OnDisconnect(void)
 /*******************************************************************************
  * Standard init/deinit for ActiveLook
  ******************************************************************************/
+/* Boot info for the event log. Called from active_mode.c AFTER FS_Log_Init
+ * (FS_ActiveLook_Init itself runs before logging is up, so a log line from
+ * there would be silently dropped — same rake as FS_EngoBind_LogStatus). */
+void FS_ActiveLook_LogBootInfo(void)
+{
+    FS_Log_WriteEventAsync("ENGO HUD v%s, AL_Rate %u ms",
+                           FS_ActiveLook_Mode0_HudVersion(),
+                           (unsigned)FS_Config_Get()->al_rate);
+}
+
 void FS_ActiveLook_Init(void)
 {
     /* Re-zero the barometric altitude at every ACTIVE entry ("switch-on"):

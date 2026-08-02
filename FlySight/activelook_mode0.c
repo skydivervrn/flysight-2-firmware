@@ -45,7 +45,7 @@
 /* Semantic HUD version. Shown at the END of the info/status line so we can
  * confirm remotely WHICH firmware is live on the glasses. Bump on every HUD
  * change. Restarted at 0.0.1 (was the old ad-hoc "v15" build tag). */
-#define HUD_VERSION "0.0.12"
+#define HUD_VERSION "0.0.13"
 
 /* Fonts VERIFIED on ENGO 3 (this unit) via Mac BLE bench 2026-07-20 — fontList
  * (0x50) returned 8 loaded fonts (id/height px): 0/24 1/24 6/32 2/38 7/48 3/64
@@ -55,6 +55,11 @@
 #define HEADER_FONT 0    /* 24 px */
 #define SPEED_FONT  3    /* 64 px — HSpd + VSpd side by side */
 #define BIG_FONT    4    /* 75 px — GR and Alt rows */
+
+const char *FS_ActiveLook_Mode0_HudVersion(void)
+{
+    return HUD_VERSION;
+}
 
 /* Takeoff/flight-detect marker, drawn at the LEFT end of the info line (with the
  * ENGO 3 X-mirror, the first character of the string is the left-most on screen).

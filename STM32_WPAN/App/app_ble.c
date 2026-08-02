@@ -48,6 +48,7 @@
 #include "activelook.h"
 #include "config.h"
 #include "engo_bind.h"
+#include "log.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -505,6 +506,11 @@ SVCCTL_UserEvtFlowStatus_t SVCCTL_App_Notification(void *p_Pckt)
         BleApplicationContext.EndDevice_Connection_Status[0] = APP_BLE_IDLE;
         BleApplicationContext.connectionHandleEndDevice1 = 0xFFFF;
 
+        /* Reason per BT spec: 0x08 supervision timeout (out of range/powered
+         * off), 0x13 remote terminated, 0x16 local terminated (self-heal). */
+        FS_Log_WriteEventAsync("ENGO disconnected: reason 0x%02X",
+                               p_disconnection_complete_event->Reason);
+
         /* Reset GATT client and app FSM, then restart discovery */
         FS_ActiveLook_Client_OnDisconnect();
         FS_ActiveLook_OnDisconnect();
@@ -624,6 +630,7 @@ SVCCTL_UserEvtFlowStatus_t SVCCTL_App_Notification(void *p_Pckt)
           uint8_t foundName = 0;   /* Name prefix "ENGO" found */
           char    candSerial[FS_ENGO_SERIAL_LEN + 1] = {0}; /* trailing 6 chars of name = ENGO serial */
           uint8_t haveSerial = 0;  /* candSerial is populated */
+          char    candName[17] = {0};  /* advertised name, for the event log */
 
           /* Process both ADV_IND and SCAN_RSP so service UUID in scan response is caught */
           if (event_type == ADV_IND || event_type == SCAN_RSP)
@@ -656,6 +663,14 @@ SVCCTL_UserEvtFlowStatus_t SVCCTL_App_Notification(void *p_Pckt)
               {
                 const uint8_t *name_data = &adv_report_data[k + 2];
                 uint8_t name_len = adlength - 1;
+
+                /* Keep a copy for the event log (prefer the complete name). */
+                if (candName[0] == '\0' || adtype == AD_TYPE_COMPLETE_LOCAL_NAME)
+                {
+                  uint8_t ci, cn = name_len < 16 ? name_len : 16;
+                  for (ci = 0; ci < cn; ci++) candName[ci] = (char)name_data[ci];
+                  candName[cn] = '\0';
+                }
 
                 APP_DBG_MSG("-- Found Device Name: '");
                 {
@@ -733,6 +748,15 @@ SVCCTL_UserEvtFlowStatus_t SVCCTL_App_Notification(void *p_Pckt)
             {
               APP_DBG_MSG("-- Found matching ENGO/ActiveLook device!\n\r");
               BleApplicationContext.EndDevice1Found = 0x01;
+
+              FS_Log_WriteEventAsync("ENGO found: '%s' (name=%u uuid=%u) addr %02X:%02X:%02X:%02X:%02X:%02X",
+                  candName[0] ? candName : "?", foundName, foundUUID,
+                  le_advertising_event->Advertising_Report[0].Address[5],
+                  le_advertising_event->Advertising_Report[0].Address[4],
+                  le_advertising_event->Advertising_Report[0].Address[3],
+                  le_advertising_event->Advertising_Report[0].Address[2],
+                  le_advertising_event->Advertising_Report[0].Address[1],
+                  le_advertising_event->Advertising_Report[0].Address[0]);
 
               /* Unbound first connect: stash the serial to learn after link-up. */
               if (!FS_EngoBind_IsBound() && haveSerial)
