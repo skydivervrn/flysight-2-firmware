@@ -77,6 +77,32 @@ status line should end with the release version (e.g. `v0.0.12`). On the USB
 drive, `FW/APP.SFB` is gone (consumed) and `Firmware_Ver:` in `flysight.txt`
 has changed.
 
+## Connecting glasses & binding
+
+**First connect:** just power the glasses on — before or after the FlySight,
+order doesn't matter. The FlySight scans continuously in ACTIVE mode and links
+within ~20–45 s of both being on. No pairing/bonding dialogs, no phone app.
+
+**Binding (automatic):** on the first successful link the FlySight pins itself
+to that pair of glasses — their 6-character serial (the tail of the advertised
+name, e.g. `ENGO 3 123456` → `123456`) is written to `engo3.txt` in the root
+of the FlySight USB drive. From then on it connects ONLY to those glasses —
+important on a dropzone where several people run ActiveLook HUDs.
+
+**Switch to different glasses / unbind:** delete `engo3.txt` from the USB
+drive (normal USB mode is fine). Next power-up the FlySight is unbound,
+links to the first ActiveLook glasses it finds, and re-binds to them.
+
+**Pin specific glasses manually:** create `engo3.txt` containing the serial —
+the last 6 characters of the glasses' Bluetooth name (shown in the ActiveLook
+phone app, in a BLE scanner, or printed as `ENGO found: '...'` in the
+FlySight's `EVENT.CSV`). Accepted formats: `123456`, `ID: 123456`, or the
+full name `ENGO 3 123456` — the last 6 characters are used.
+
+**Verify:** each session's `EVENT.CSV` logs the bind state at boot
+(`ENGO bind: pinned to serial 123456` / `unbound -> connect to first`) and
+`ENGO bind: linked to glasses serial 123456` once connected.
+
 ## Rollback to official firmware
 
 The bootloader always survives, so you can never brick the device this way:
