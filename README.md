@@ -125,7 +125,11 @@ hit on the way.
 
 Please open a [GitHub issue](../../issues) — include your `flysight.txt`
 `Firmware_Ver`, the HUD version from the glasses, and (for connection issues)
-your glasses model and firmware version.
+your glasses model and firmware version. Attaching the newest session's
+`EVENT.CSV` from the device helps a lot — since v0.0.13 it records the whole
+BLE link lifecycle.
+
+Prefer email? Write to **flysight@domovionok.com**.
 
 ## Disclaimer
 
