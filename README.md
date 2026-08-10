@@ -100,6 +100,14 @@ it cannot damage anything.
 
 Open the download page: **[latest release](../../releases/latest)**
 
+> There are two kinds of build. **Stable** is what the link above gives you —
+> tested on real hardware, this is what you want. **Nightly** is built
+> automatically from the newest code and may contain untested features; it lives
+> on the [releases page](../../releases) marked *Pre-release*. Nightly builds
+> show a version like `v0.0.14-n.a1b2c3d` in the glasses, so you can always tell
+> which one you are running. Going back to stable is just installing the stable
+> file the same way.
+
 Scroll down to the list of files (it's called *Assets*) and click the one for
 your batch, for example **`FlySight2-ENGO-HUD-B2.sfb`**. It downloads like any
 other file — usually into your *Downloads* folder.

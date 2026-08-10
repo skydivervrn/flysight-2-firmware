@@ -61,7 +61,12 @@ C_INCLUDES = \
 OPT         = -Os
 # -fno-tree-loop-distribute-patterns: stop GCC 12+ rewriting init loops into memcpy/memset
 # calls that run before the C runtime is ready → classic bare-metal boot crash.
-CFLAGS      = $(MCU) $(C_DEFS) $(C_INCLUDES) $(OPT) -Wall -fdata-sections -ffunction-sections -std=gnu11 -fno-tree-loop-distribute-patterns
+# EXTRA_CFLAGS: hook for CI. The nightly build passes
+#   EXTRA_CFLAGS='-DHUD_VERSION=\"0.0.15-n.abc1234\"'
+# so the version shown on the glasses identifies the exact commit (see
+# .github/workflows/nightly.yml). HUD_VERSION in activelook_mode0.c is wrapped
+# in #ifndef precisely so this override works.
+CFLAGS      = $(MCU) $(C_DEFS) $(C_INCLUDES) $(OPT) -Wall -fdata-sections -ffunction-sections -std=gnu11 -fno-tree-loop-distribute-patterns $(EXTRA_CFLAGS)
 ASFLAGS     = $(MCU) $(OPT) -Wall -fdata-sections -ffunction-sections
 
 # -u _printf_float: newlib-nano drops %f/%g from printf/snprintf by default; without

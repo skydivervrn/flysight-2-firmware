@@ -1,0 +1,105 @@
+name: Nightly firmware
+
+# Builds the current head and publishes it as the `nightly` PRE-RELEASE.
+# Marking it as a pre-release is what keeps /releases/latest — the link handed
+# to users in the README — pointing at the last STABLE release instead.
+#
+# Stable releases stay manual: build, hardware-test, then publish a normal
+# (non-pre-release) tag v0.0.x.
+
+on:
+  push:
+    branches: [engo-hud-public]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - '.github/**'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache Arm GNU toolchain 12.3
+        id: cache-toolchain
+        uses: actions/cache@v4
+        with:
+          path: ~/opt/arm-gnu-toolchain-12.3.rel1-x86_64-arm-none-eabi
+          key: armgnu-12.3.rel1-x86_64
+
+      # GCC 12.3 specifically: 14.x produces an image that installs but does not
+      # boot on this MCU (see Docs/BUILDING.md).
+      - name: Install Arm GNU toolchain 12.3
+        if: steps.cache-toolchain.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/opt && cd ~/opt
+          curl -fSL -o armgnu.tar.xz \
+            https://developer.arm.com/-/media/Files/downloads/gnu/12.3.rel1/binrel/arm-gnu-toolchain-12.3.rel1-x86_64-arm-none-eabi.tar.xz
+          tar -xf armgnu.tar.xz
+          rm armgnu.tar.xz
+
+      - name: Host unit tests
+        run: cd Tests && make run
+
+      - name: Version stamp
+        id: ver
+        run: |
+          BASE=$(sed -n 's/^#define HUD_VERSION "\(.*\)"/\1/p' FlySight/activelook_mode0.c | head -1)
+          SHORT=$(git rev-parse --short HEAD)
+          echo "hud=${BASE}-n.${SHORT}" >> "$GITHUB_OUTPUT"
+          echo "short=${SHORT}" >> "$GITHUB_OUTPUT"
+          echo "Nightly HUD version: ${BASE}-n.${SHORT}"
+
+      - name: Build firmware
+        run: |
+          make PREFIX=$HOME/opt/arm-gnu-toolchain-12.3.rel1-x86_64-arm-none-eabi/bin/arm-none-eabi- \
+               EXTRA_CFLAGS='-DHUD_VERSION=\"${{ steps.ver.outputs.hud }}\"'
+          test -f build/UserApp.bin
+          # the stamped version must really be in the image, or the marker lies
+          strings build/FlySight.elf | grep -q '${{ steps.ver.outputs.hud }}'
+
+      - name: Encrypt for every batch
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install --quiet coincurve pycryptodome
+          cp build/UserApp.bin Deploy/Firmware_As_Built/UserApp.bin
+          mkdir -p out
+          cd Deploy
+          for B in B2 B3 B4 B5 B6; do
+            k=$(echo "$B" | tr 'A-Z' 'a-z')
+            ../.venv/bin/python -c "import deploy_firmware as d; d.encrypt_firmware_with_key('Firmware_As_Built/UserApp.bin','UserApp','Public_Keys/pub_key_${k}.bin','${B}')"
+            cp "Firmware_To_Deploy/${B}_UserApp.sfb" "../out/FlySight2-ENGO-HUD-${B}.sfb"
+          done
+          cd ../out
+          # every file must be a valid SFU container
+          for f in *.sfb; do [ "$(head -c4 "$f")" = "SFU1" ] || { echo "BAD container: $f"; exit 1; }; done
+          sha256sum *.sfb > sha256sums.txt
+          cat sha256sums.txt
+
+      - name: Publish nightly pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > notes.md <<EOF
+          **Nightly build — may contain untested features.**
+
+          Built automatically from \`${{ steps.ver.outputs.short }}\` on $(date -u +%Y-%m-%d). It compiles and passes the host unit tests, but it has **not** been flown, and possibly not even flashed to a device.
+
+          The glasses will show \`v${{ steps.ver.outputs.hud }}\` in the status line, so you can always tell a nightly from a stable build.
+
+          If you want the tested build instead, take the [latest stable release](https://github.com/${{ github.repository }}/releases/latest).
+
+          Install exactly as described in the [install guide](https://github.com/${{ github.repository }}#install) — pick the file for your batch, rename it to \`APP.SFB\`. Rolling back to stable, or to the official firmware, works the same way.
+          EOF
+          gh release delete nightly --yes --cleanup-tag 2>/dev/null || true
+          gh release create nightly \
+            --title "Nightly (${{ steps.ver.outputs.short }})" \
+            --notes-file notes.md \
+            --prerelease \
+            --target "$GITHUB_SHA" \
+            out/*.sfb out/sha256sums.txt

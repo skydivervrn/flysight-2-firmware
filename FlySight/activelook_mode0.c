@@ -44,8 +44,15 @@
 
 /* Semantic HUD version. Shown at the END of the info/status line so we can
  * confirm remotely WHICH firmware is live on the glasses. Bump on every HUD
- * change. Restarted at 0.0.1 (was the old ad-hoc "v15" build tag). */
+ * change. Restarted at 0.0.1 (was the old ad-hoc "v15" build tag).
+ *
+ * Guarded by #ifndef so CI can stamp a nightly build with its commit, e.g.
+ *   make EXTRA_CFLAGS='-DHUD_VERSION=\"0.0.15-n.abc1234\"'
+ * Then the string on the glasses says exactly which build is running — the
+ * whole point of this marker (Firmware_Ver in flysight.txt is unreliable). */
+#ifndef HUD_VERSION
 #define HUD_VERSION "0.0.14"
+#endif
 
 /* Fonts VERIFIED on ENGO 3 (this unit) via Mac BLE bench 2026-07-20 — fontList
  * (0x50) returned 8 loaded fonts (id/height px): 0/24 1/24 6/32 2/38 7/48 3/64
