@@ -45,7 +45,7 @@
 /* Semantic HUD version. Shown at the END of the info/status line so we can
  * confirm remotely WHICH firmware is live on the glasses. Bump on every HUD
  * change. Restarted at 0.0.1 (was the old ad-hoc "v15" build tag). */
-#define HUD_VERSION "0.0.13"
+#define HUD_VERSION "0.0.14"
 
 /* Fonts VERIFIED on ENGO 3 (this unit) via Mac BLE bench 2026-07-20 — fontList
  * (0x50) returned 8 loaded fonts (id/height px): 0/24 1/24 6/32 2/38 7/48 3/64
