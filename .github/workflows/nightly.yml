@@ -23,7 +23,14 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+      # fetch-depth: 0 so tags are present. Without them `git describe`
+      # (Makefile -> GIT_TAG -> Firmware_Ver) degrades to a bare short sha,
+      # which carries no ordering — the Glidex app then cannot tell whether a
+      # nightly-flashed device supports over-the-air updates and safely falls
+      # back to telling the user to use a USB cable. See glidex docs/SPEC.md 6a.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Cache Arm GNU toolchain 12.3
         id: cache-toolchain
