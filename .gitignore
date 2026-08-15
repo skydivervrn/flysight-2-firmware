@@ -31,6 +31,9 @@ Deploy/__pycache__/
 build/
 Tests/test_activelook
 Tests/test_time
+Tests/test_flight_detect
+Tests/test_engo_bind
+Tests/build_engo_bind/
 Tests/*.dSYM/
 
 # Local working notes / device-specific runbooks (kept out of the public repo)
