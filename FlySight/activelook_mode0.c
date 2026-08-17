@@ -518,7 +518,10 @@ void FS_ActiveLook_Mode0_Update(void)
     s_hdrDivider = (uint8_t)((s_hdrDivider + 1) % 5);
 
     /* --- Render each element of the layout to a string --- */
-    char text[FS_HUD_MAX_ELEMENTS][AL_MODE0_MAX_TEXT];
+    /* Static on purpose: 8x48 = 384 bytes would otherwise land on the task
+     * stack (the old fixed-layout code kept ~96 bytes there). The render tick
+     * is single-threaded under the sequencer, so one buffer is safe. */
+    static char text[FS_HUD_MAX_ELEMENTS][AL_MODE0_MAX_TEXT];
     for (int i = 0; i < FS_HUD_MAX_ELEMENTS; i++)
         text[i][0] = '\0';
 

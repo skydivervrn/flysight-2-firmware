@@ -424,6 +424,13 @@ FS_Config_Result_t FS_Config_Read(const char *filename)
 
 	uint8_t flags = 0;
 
+	/* True while the most recent AL_Line was ACCEPTED, i.e. there is an open
+	 * HUD element for AL_Units/AL_Dec/AL_X/AL_Y/AL_Font to refine. Without
+	 * this, keys under a rejected AL_Line (out-of-range id, or a 9th element)
+	 * would clobber the previous element — and a stray AL_X with no AL_Line
+	 * at all would edit the pre-filled default layout from FS_Config_Init. */
+	uint8_t alOpen = 0;
+
 	if (f_open(&configFile, filename, FA_READ) != FR_OK)
 		return FS_CONFIG_ERR;
 
@@ -577,38 +584,73 @@ FS_Config_Result_t FS_Config_Read(const char *filename)
 		/* HUD elements. One AL_Line opens an element; the AL_Units / AL_Dec /
 		 * AL_X / AL_Y / AL_Font keys that follow refine it, in any order, and
 		 * each may be omitted — an unstated coordinate keeps the built-in
-		 * position for that slot. Same shape as the Alarm_* and Sp_* blocks. */
-		if (!strcmp(name, "AL_Line") && config.al_layout.count < FS_HUD_MAX_ELEMENTS)
+		 * position for that slot. Same shape as the Alarm_* and Sp_* blocks.
+		 *
+		 * Values are clamped from the RAW long here, before they touch the
+		 * narrow struct fields: assigning first and clamping later would let
+		 * e.g. 65836 wrap through int16 to a plausible 300 and sail past the
+		 * clamp. The app's parser (hud_layout.dart) mirrors these semantics
+		 * key for key — change one side only with the other in hand. */
+		#define CFG_CLAMP(v, lo, hi) \
+			((v) < (lo) ? (lo) : ((v) > (hi) ? (hi) : (v)))
+
+		if (!strcmp(name, "AL_Line"))
 		{
 			if (!(flags & CONFIG_FIRST_AL_LINE))
 			{
+				/* This file authors its own element list: start it empty, and
+				 * make the built-in-layout decision from THIS file's keys
+				 * rather than inheriting it from a previously read file. */
 				config.al_layout.count = 0;
+				config.al_layout_valid = 0;
 				flags |= CONFIG_FIRST_AL_LINE;
 			}
 
-			FS_HudLayout_DefaultSlot(config.al_layout.count, (uint8_t)val,
-					&config.al_layout.el[config.al_layout.count]);
-			++config.al_layout.count;
+			if (val >= 0 && val <= 255
+					&& config.al_layout.count < FS_HUD_MAX_ELEMENTS)
+			{
+				FS_HudLayout_DefaultSlot(config.al_layout.count, (uint8_t)val,
+						&config.al_layout.el[config.al_layout.count]);
+				++config.al_layout.count;
+				alOpen = 1;
+			}
+			else
+			{
+				alOpen = 0;
+			}
 		}
-		if (config.al_layout.count > 0)
+		if (alOpen && config.al_layout.count > 0)
 		{
 			FS_HudElement_t *el = &config.al_layout.el[config.al_layout.count - 1];
 
-			if (!strcmp(name, "AL_Units")) el->units    = val;
-			if (!strcmp(name, "AL_Dec"))   el->decimals = val;
+			if (!strcmp(name, "AL_Units")) el->units    = (val == 1) ? 1 : 0;
+			if (!strcmp(name, "AL_Dec"))   el->decimals = CFG_CLAMP(val, 0, 3);
 
 			/* Any of these three means the file is describing positions, so
 			 * the built-in layout steps aside in favour of the file's. */
-			if (!strcmp(name, "AL_X"))    { el->x    = val; config.al_layout_valid = 1; }
-			if (!strcmp(name, "AL_Y"))    { el->y    = val; config.al_layout_valid = 1; }
-			if (!strcmp(name, "AL_Font")) { el->font = val; config.al_layout_valid = 1; }
+			if (!strcmp(name, "AL_X")) {
+				el->x = CFG_CLAMP(val, 0, FS_HUD_PANEL_W - 1);
+				config.al_layout_valid = 1;
+			}
+			if (!strcmp(name, "AL_Y")) {
+				el->y = CFG_CLAMP(val, 0, FS_HUD_PANEL_H - 1);
+				config.al_layout_valid = 1;
+			}
+			if (!strcmp(name, "AL_Font")) {
+				el->font = CFG_CLAMP(val, 0, FS_HUD_MAX_FONT);
+				config.al_layout_valid = 1;
+			}
 		}
 
 		/* Global HUD offset — the "screen position" adjustment, in viewer
 		 * terms (positive X moves the image to the wearer's right, positive Y
 		 * moves it up). Applies to every element, layout or built-in. */
-		if (!strcmp(name, "AL_Shift_X")) config.al_layout.shift_x = val;
-		if (!strcmp(name, "AL_Shift_Y")) config.al_layout.shift_y = val;
+		if (!strcmp(name, "AL_Shift_X"))
+			config.al_layout.shift_x = CFG_CLAMP(val, -FS_HUD_MAX_SHIFT, FS_HUD_MAX_SHIFT);
+		if (!strcmp(name, "AL_Shift_Y"))
+			config.al_layout.shift_y = CFG_CLAMP(val, -FS_HUD_MAX_SHIFT, FS_HUD_MAX_SHIFT);
+
+		#undef CFG_CLAMP
 
 		if (!strcmp(name, "AL_ID"))
 		{
