@@ -34,6 +34,7 @@
 #include "vbat.h"
 #include "app_common.h"
 #include "baro.h"                 // For FS_Baro_GetData() (needs HAL types from app_common.h)
+#include "log.h"                  // For FS_Log_WriteEventAsync() (same HAL dependency)
 #include <string.h>
 #include <stdio.h>
 #include <stdint.h>
@@ -52,7 +53,7 @@
  * Then the string on the glasses says exactly which build is running — the
  * whole point of this marker (Firmware_Ver in flysight.txt is unreliable). */
 #ifndef HUD_VERSION
-#define HUD_VERSION "0.0.18"
+#define HUD_VERSION "0.0.19"
 #endif
 
 /* Fonts VERIFIED on ENGO 3 (this unit) via Mac BLE bench 2026-07-20 — fontList
@@ -277,11 +278,43 @@ static uint8_t s_hdrDivider;
    next 1 s tick, which visibly slowed HUD updates.
    -------------------------------------------------------------------------- */
 
-#define AL_FRAME_MAX_PKTS  16
+/* Worst case for one frame: holdFlush(HOLD) + clear, then every element as a
+ * value txt AND a unit txt (v0.0.19 draws the unit as its own command), then
+ * holdFlush(FLUSH). The cap MUST cover it: an overflow would drop the closing
+ * FLUSH and leave the glasses held — the HUD frozen with the link still up,
+ * which is exactly the failure this project has spent months chasing. 8 elements
+ * cost 8*80 = 640 bytes of static RAM more than the old cap of 16. */
+#define AL_FRAME_WORST_PKTS  (FS_HUD_MAX_ELEMENTS * 2 + 3)
+#define AL_FRAME_MAX_PKTS    24
+
+#if AL_FRAME_MAX_PKTS < AL_FRAME_WORST_PKTS
+#error "AL_FRAME_MAX_PKTS is smaller than a full HUD frame: the closing holdFlush(FLUSH) would be dropped and the glasses would stay held. Raise it."
+#endif
+
 static uint8_t  s_framePkt[AL_FRAME_MAX_PKTS][80];
 static uint16_t s_framePktLen[AL_FRAME_MAX_PKTS];
 static uint8_t  s_frameCount = 0;   /* packets in the current frame            */
 static uint8_t  s_frameIdx   = 0;   /* next packet to send (== count when done)*/
+
+/* One line in EVENT.CSV per boot if a frame ever fills up anyway. The #error
+ * above says it cannot happen; if the layout ever outgrows the cap regardless,
+ * the log is what tells us, instead of a silently truncated frame and a HUD
+ * that stops. Latched for the whole session on purpose — the condition would
+ * repeat every tick, and a log line 4 times a second would bury the card. */
+static bool s_frameFullLogged = false;
+
+static bool AL_FrameFull(void)
+{
+    if (s_frameCount < AL_FRAME_MAX_PKTS) return false;
+
+    if (!s_frameFullLogged)
+    {
+        s_frameFullLogged = true;
+        FS_Log_WriteEventAsync("ENGO frame full: %u packets, draw dropped",
+                               (unsigned)s_frameCount);
+    }
+    return true;
+}
 
 static void AL_FrameReset(void)
 {
@@ -292,7 +325,7 @@ static void AL_FrameReset(void)
 /* Append a holdFlush command (AL_HOLD=0x00 or AL_FLUSH=0x01) to the frame. */
 static void AL_FrameAddHoldFlush(uint8_t action)
 {
-    if (s_frameCount >= AL_FRAME_MAX_PKTS) return;
+    if (AL_FrameFull()) return;
     size_t plen = AL_BuildFrame(s_framePkt[s_frameCount], 80,
                                 AL_CMD_HOLD_FLUSH, &action, 1);
     if (plen) { s_framePktLen[s_frameCount] = (uint16_t)plen; s_frameCount++; }
@@ -301,7 +334,7 @@ static void AL_FrameAddHoldFlush(uint8_t action)
 /* Append a clear (0x01) command to the frame. */
 static void AL_FrameAddClear(void)
 {
-    if (s_frameCount >= AL_FRAME_MAX_PKTS) return;
+    if (AL_FrameFull()) return;
     size_t plen = AL_BuildFrame(s_framePkt[s_frameCount], 80,
                                 AL_CMD_CLEAR, NULL, 0);
     if (plen) { s_framePktLen[s_frameCount] = (uint16_t)plen; s_frameCount++; }
@@ -311,7 +344,7 @@ static void AL_FrameAddClear(void)
  * rotation must be 4; X is mirrored (large x = viewer-left); colour 15. */
 static void AL_FrameAddText(int16_t x, int16_t y, uint8_t font, const char *str)
 {
-    if (s_frameCount >= AL_FRAME_MAX_PKTS) return;
+    if (AL_FrameFull()) return;
     size_t plen = AL_BuildText(s_framePkt[s_frameCount], 80,
                                x, y, 4, font, 15, str);
     if (plen) { s_framePktLen[s_frameCount] = (uint16_t)plen; s_frameCount++; }
@@ -514,8 +547,17 @@ void FS_ActiveLook_Mode0_Update(void)
      * stack (the old fixed-layout code kept ~96 bytes there). The render tick
      * is single-threaded under the sequencer, so one buffer is safe. */
     static char text[FS_HUD_MAX_ELEMENTS][AL_MODE0_MAX_TEXT];
+    /* The quantity each element ended up drawing, for the unit draw below. It
+     * stays FS_HUD_QTY_NONE — i.e. no unit — for everything that is not a live
+     * value: the status family, an empty or unknown field, and a GPS-derived
+     * reading with no fix, which shows "----". A bare "km/h" beside four dashes
+     * would say nothing; v0.0.18 printed no suffix there either. */
+    static FS_HudQuantity_t qty[FS_HUD_MAX_ELEMENTS];
     for (int i = 0; i < FS_HUD_MAX_ELEMENTS; i++)
+    {
         text[i][0] = '\0';
+        qty[i]     = FS_HUD_QTY_NONE;
+    }
 
     for (int i = 0; i < s_layout.count; i++)
     {
@@ -540,19 +582,13 @@ void FS_ActiveLook_Mode0_Update(void)
         FS_HudUnitConv_t conv = FS_HudLayout_UnitConv(entry->qty, el->units);
         double v = entry->fn(gnss) * conv.multiplier;
 
-        /* AL_Unit_Show: append the suffix the conversion table already carries
-         * ("km/h", "m/s", "mph", "ft/s", "m", "ft", "km", "mi", "deg" — whichever
-         * of them AL_Units resolved to), one space after the value. The
-         * unitless fields (GR, 1/GR) come back with an empty suffix, so the
-         * flag needs no special case for them — testing the suffix keeps a
-         * stray trailing space off the panel. Worst case here is
-         * "-12345.678 km/h" = 15 chars, well inside AL_MODE0_MAX_TEXT (48);
-         * snprintf truncates rather than overruns in any event. */
-        if (el->show_units && conv.suffix[0] != '\0')
-            snprintf(text[i], AL_MODE0_MAX_TEXT, "%.*f %s",
-                     (int)el->decimals, v, conv.suffix);
-        else
-            snprintf(text[i], AL_MODE0_MAX_TEXT, "%.*f", (int)el->decimals, v);
+        /* The value alone, always — byte for byte what v0.0.18 wrote with
+         * AL_Unit_Show off. Since v0.0.19 the unit is no longer part of this
+         * string: it is a second txt in font 0, placed by FS_HudLayout_UnitDraw
+         * when the frame is built below. Drawn in the value's own font, "km/h"
+         * at 64 or 75 px took more of the panel than the number did. */
+        snprintf(text[i], AL_MODE0_MAX_TEXT, "%.*f", (int)el->decimals, v);
+        qty[i] = entry->qty;
     }
 
     /* --- Change detection: skip the BLE write if nothing changed --- */
@@ -590,6 +626,16 @@ void FS_ActiveLook_Mode0_Update(void)
         if (!FS_HudLayout_Place(&s_layout, (uint8_t)i, &x, &y))
             continue;
         AL_FrameAddText(x, y, s_layout.el[i].font, text[i]);
+
+        /* AL_Unit_Show: the unit as its own draw, in the smallest font, sitting
+         * one gap past the width RESERVED for the value (not past the width of
+         * today's reading — a unit that moved whenever the value crossed 100
+         * would read as a fault). Nothing is emitted at all when the element
+         * draws no unit, so a layout with the flag off sends exactly the frame
+         * v0.0.18 sent. */
+        FS_HudUnitDraw_t u;
+        if (FS_HudLayout_UnitDraw(&s_layout.el[i], qty[i], x, y, &u))
+            AL_FrameAddText(u.x, u.y, u.font, u.text);
     }
     AL_FrameAddHoldFlush(AL_FLUSH);
     FS_ActiveLook_Mode0_DrainFrame();

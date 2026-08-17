@@ -137,12 +137,15 @@ typedef struct
 	uint8_t show_units;/* 0 = bare value, 1 = value + unit suffix           */
 } FS_HudElement_t;
 
-/* show_units appends the element's unit suffix after a single space, so a speed
- * reads "148 km/h" instead of "148". DEFAULT 0 everywhere, deliberately: the
- * layout in Docs/HUD_LAYOUT.md was approved on hardware with bare numbers, and
- * how much room a suffix takes at 64/75 px is a guess until someone looks at it
- * through the glasses — an untouched device must keep looking exactly as it does
- * today. The suffix comes from FS_HudLayout_UnitConv below, which is empty for
+/* show_units draws the element's unit beside the value, so a speed reads
+ * "148 km/h" instead of "148". Since v0.0.19 the unit is its OWN txt in font 0
+ * (24 px) rather than part of the value's string — see FS_HudLayout_UnitDraw at
+ * the bottom of this file. DEFAULT 0 everywhere, deliberately: the layout in
+ * Docs/HUD_LAYOUT.md was approved on hardware with bare numbers, and how much
+ * room even a 24 px suffix takes beside a 75 px value is an estimate until
+ * someone looks at it through the glasses — an untouched device must keep
+ * looking exactly as it does today. The suffix comes from
+ * FS_HudLayout_UnitConv below, which is empty for
  * the unitless fields (glide ratio, inverse glide ratio) and never consulted for
  * the status family, so the flag is a silent no-op there rather than a special
  * case anyone has to remember — with one deliberate exception: on the split
@@ -204,5 +207,72 @@ int FS_HudLayout_FieldIsStatus(uint8_t field);
  * Angles are always "deg"; the unitless quantities always have an empty
  * suffix, which is what makes AL_Unit_Show a silent no-op there. */
 FS_HudUnitConv_t FS_HudLayout_UnitConv(FS_HudQuantity_t qty, uint8_t units);
+
+/* --------------------------------------------------------------------------
+   The unit suffix as its own draw (v0.0.19)
+
+   Until v0.0.18 AL_Unit_Show appended the suffix inside the value's own
+   snprintf, so "148 km/h" was drawn entirely in the value's font — at 64 or
+   75 px the unit alone is wider than a third of the panel. It is a separate
+   txt now, in the SMALLEST loaded font (id 0, 24 px, the one the status line
+   uses), bottom-aligned with the value.
+
+   Geometry, both consequences of the panel facts at the top of this file:
+     - glyphs hang DOWN from the anchor, so sharing a BASELINE means lowering
+       the unit's anchor by the difference in font heights;
+     - X is mirrored and a string grows toward SMALLER x, so the unit's anchor
+       sits one gap PAST the end of the value: x_unit = x_val - w_val - gap.
+   -------------------------------------------------------------------------- */
+
+/* The unit is always drawn in font 0 — 24 px, the smallest loaded on ENGO 3.
+ * Deliberately not a CONFIG.TXT key: the point of the feature is that the unit
+ * stays out of the value's way, and a configurable unit font is one more thing
+ * a card can get wrong for no gain anybody asked for. */
+#define FS_HUD_UNIT_FONT  0
+
+/* Blank columns between the value's reserved box and the unit's first glyph
+ * cell. ENGO glyph cells are OPAQUE — a cell that lands on a digit erases part
+ * of it — so this gap is what keeps a rounding error in the width estimate
+ * below from eating a digit. */
+#define FS_HUD_UNIT_GAP   5
+
+typedef struct
+{
+	int16_t     x;
+	int16_t     y;
+	uint8_t     font;
+	const char *text;   /* the suffix, e.g. "km/h"; never empty when returned */
+} FS_HudUnitDraw_t;
+
+/* Height in px of font `font`, from fontList (0x50) read off ENGO 3 hardware:
+ * 0/24 1/24 6/32 2/38 7/48 3/64 4/75 5/82. MEASURED — the glasses report it. */
+uint8_t FS_HudLayout_FontHeight(uint8_t font);
+
+/* UPPER-BOUND horizontal advance of one character of `font`, in px.
+ *
+ * ESTIMATED, NOT MEASURED — see the table in hud_layout.c for how, and for the
+ * bench experiment that would replace these numbers with real ones. The
+ * protocol cannot help: fontList returns id and height only, there is no
+ * text-extent command, and a font cannot be read back out of the glasses. */
+uint8_t FS_HudLayout_FontAdvance(uint8_t font);
+
+/* How many character cells the value is allowed to occupy, for the purpose of
+ * placing the unit beside it. A RESERVATION, fixed by the element's quantity,
+ * unit and precision — deliberately NOT the length of the live string, because
+ * a unit whose position tracked the reading would slide left and right every
+ * time the value crossed 100, which reads as a fault. */
+uint8_t FS_HudLayout_ValueChars(FS_HudQuantity_t qty, uint8_t units,
+                                int8_t decimals);
+
+/* Where the unit of element `el` is drawn, given where its value was placed
+ * (val_x/val_y as returned by FS_HudLayout_Place, and el->font).
+ *
+ * Returns 1 and fills *out when a second txt must be emitted; returns 0 — and
+ * the renderer emits nothing extra, exactly as v0.0.18 does — when the element
+ * draws no unit at all: AL_Unit_Show off, a unitless quantity (glide ratio and
+ * its inverse), or one of the status family, where the flag means the prefix
+ * instead. The result is clamped to the panel. */
+int FS_HudLayout_UnitDraw(const FS_HudElement_t *el, FS_HudQuantity_t qty,
+                          int16_t val_x, int16_t val_y, FS_HudUnitDraw_t *out);
 
 #endif /* HUD_LAYOUT_H_ */

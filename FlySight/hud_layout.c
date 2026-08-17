@@ -23,8 +23,9 @@
 /* The four data slots, in the order the HUD has drawn them since v0.0.11.
  * Fonts: 3 = 64 px (the two speeds, side by side), 4 = 75 px (GR and Alt).
  * Trailing 0 = show_units off. These positions were approved on hardware with
- * bare numbers only; whether a suffix still fits between HSpd (x=268) and VSpd
- * (x=134) at 64 px has NOT been measured, so the default does not risk it. */
+ * bare numbers only; whether a suffix — even the 24 px one v0.0.19 draws —
+ * still fits between HSpd (x=268) and VSpd (x=134) has NOT been measured
+ * through the glasses, so the default does not risk it. */
 static const FS_HudElement_t s_defaultSlots[FS_HUD_DEFAULT_SLOTS] =
 {
 	{ FS_HUD_FIELD_HSPEED,   268, 208, 3, FS_HUD_UNITS_METRIC, 0, 0 },
@@ -254,4 +255,161 @@ FS_HudUnitConv_t FS_HudLayout_UnitConv(FS_HudQuantity_t qty, uint8_t units)
 	}
 
 	return info;
+}
+
+/* --------------------------------------------------------------------------
+   Placing the unit beside the value (v0.0.19)
+   -------------------------------------------------------------------------- */
+
+/* Font heights, id -> px. MEASURED: this is what fontList (0x50) returned from
+ * the ENGO 3 on the Mac bench, 2026-07-20. */
+static const uint8_t s_fontHeight[FS_HUD_MAX_FONT + 1] =
+{
+	24,  /* 0 */
+	24,  /* 1 */
+	38,  /* 2 */
+	64,  /* 3 */
+	75,  /* 4 */
+	82,  /* 5 */
+	32,  /* 6 */
+	48,  /* 7 */
+};
+
+/* Per-font horizontal advance of ONE character, px.
+ *
+ * ==> THESE NUMBERS ARE UPPER-BOUND ESTIMATES, NOT MEASUREMENTS. <==
+ *
+ * Nothing in the ActiveLook protocol reports how wide a string will be:
+ * fontList (0x50) returns id and height only, there is no text-extent query,
+ * and a loaded font cannot be read back. So each entry is 5/8 of the font's
+ * MEASURED height, rounded up — digits in a sans font of this kind advance
+ * roughly 0.5 to 0.6 of the line height, and 0.625 leaves headroom above that
+ * for the widest digit. The direction of the error is what matters: too LARGE
+ * only pushes the unit further from the value (empty space, harmless), while
+ * too small would let the unit's glyph cells land on the value's — and ENGO
+ * cells are opaque, so that eats part of a digit.
+ *
+ * TO REPLACE THESE WITH MEASURED NUMBERS: on the Mac bench
+ * (Tools/engo_mac_hud_mock.py, glasses on), for each font id draw "88888888"
+ * on a cleared screen, then read pixelCount (0xA5) before and after a black
+ * rectf (0x25) swept in from one edge until the count stops changing — the
+ * sweep position where the last lit pixel disappears is the string's true
+ * extent, and dividing by the character count gives the advance. Put the
+ * result here and delete this paragraph. */
+static const uint8_t s_fontAdvance[FS_HUD_MAX_FONT + 1] =
+{
+	15,  /* 0:  24 px */
+	15,  /* 1:  24 px */
+	24,  /* 2:  38 px */
+	40,  /* 3:  64 px */
+	47,  /* 4:  75 px */
+	52,  /* 5:  82 px */
+	20,  /* 6:  32 px */
+	30,  /* 7:  48 px */
+};
+
+uint8_t FS_HudLayout_FontHeight(uint8_t font)
+{
+	if (font > FS_HUD_MAX_FONT) font = FS_HUD_MAX_FONT;
+	return s_fontHeight[font];
+}
+
+uint8_t FS_HudLayout_FontAdvance(uint8_t font)
+{
+	if (font > FS_HUD_MAX_FONT) font = FS_HUD_MAX_FONT;
+	return s_fontAdvance[font];
+}
+
+/* Integer digits reserved for a quantity, keyed off the unit it actually
+ * resolved to (so `AL_Units: 8` on a speed reserves what km/h needs, which is
+ * what it will be drawn in). Generous by intent — a reservation that is one
+ * digit short lets the unit eat a digit the first time the reading gets big,
+ * and that is the failure mode this whole reservation exists to prevent:
+ *   speed     999 covers any km/h, mph, m/s or ft/s a canopy or wingsuit sees
+ *   altitude  9999 m, or 99999 ft
+ *   distance  99999 m / ft, 999 km / mi
+ *   angle     359, or -180 with the sign column below
+ */
+static uint8_t value_int_digits(FS_HudQuantity_t qty, const char *suffix)
+{
+	switch (qty)
+	{
+	case FS_HUD_QTY_SPEED:
+	case FS_HUD_QTY_ANGLE:
+		return 3;
+
+	case FS_HUD_QTY_ALTITUDE:
+		return (strcmp(suffix, "ft") == 0) ? 5 : 4;
+
+	case FS_HUD_QTY_DISTANCE:
+		return (strcmp(suffix, "m") == 0 || strcmp(suffix, "ft") == 0) ? 5 : 3;
+
+	case FS_HUD_QTY_NONE:
+	default:
+		return 0;
+	}
+}
+
+uint8_t FS_HudLayout_ValueChars(FS_HudQuantity_t qty, uint8_t units,
+                                int8_t decimals)
+{
+	FS_HudUnitConv_t conv = FS_HudLayout_UnitConv(qty, units);
+	uint8_t digits = value_int_digits(qty, conv.suffix);
+
+	if (digits == 0) return 0;   /* unitless: nothing to place a unit against */
+
+	if (decimals < 0) decimals = 0;
+	if (decimals > 3) decimals = 3;
+
+	/* One column for the sign, always. Vertical speed, a relative bearing and a
+	 * barometric altitude below the point it was zeroed at are all routinely
+	 * negative, and a reservation that changes with the sign would move the unit
+	 * every time a wingsuit levelled off. */
+	return (uint8_t)(1 + digits + (decimals > 0 ? 1 + decimals : 0));
+}
+
+int FS_HudLayout_UnitDraw(const FS_HudElement_t *el, FS_HudQuantity_t qty,
+                          int16_t val_x, int16_t val_y, FS_HudUnitDraw_t *out)
+{
+	if (el == 0 || out == 0) return 0;
+
+	/* Off, or one of the status family — where AL_Unit_Show turns on the PREFIX
+	 * ("A:", "F:", "N:") inside the value's own string and there is no second
+	 * draw at all. */
+	if (!el->show_units) return 0;
+	if (FS_HudLayout_FieldIsStatus(el->field)) return 0;
+	if (el->field == FS_HUD_FIELD_NONE) return 0;
+
+	FS_HudUnitConv_t conv = FS_HudLayout_UnitConv(qty, el->units);
+	if (conv.suffix[0] == '\0') return 0;   /* glide ratio and its inverse */
+
+	uint8_t chars = FS_HudLayout_ValueChars(qty, el->units, el->decimals);
+	if (chars == 0) return 0;
+
+	uint8_t vfont = (el->font > FS_HUD_MAX_FONT) ? FS_HUD_MAX_FONT : el->font;
+
+	/* Bottom-aligned: the anchor is the TOP of the glyphs, so the shorter font
+	 * has to start lower by exactly the difference in heights. */
+	int32_t dy = (int32_t)FS_HudLayout_FontHeight(vfont)
+	           - (int32_t)FS_HudLayout_FontHeight(FS_HUD_UNIT_FONT);
+
+	int32_t x = (int32_t)val_x
+	          - (int32_t)FS_HudLayout_FontAdvance(vfont) * (int32_t)chars
+	          - FS_HUD_UNIT_GAP;
+	int32_t y = (int32_t)val_y - dy;
+
+	/* Clamped like every other coordinate this module hands out. A value box
+	 * wider than the panel — a distance in metres at 3 decimals in 82 px — puts
+	 * the unit hard against the far edge; nothing can be done about that, and the
+	 * value itself does not fit either. */
+	if (x < 0) x = 0;
+	if (x > FS_HUD_PANEL_W - 1) x = FS_HUD_PANEL_W - 1;
+	if (y < 0) y = 0;
+	if (y > FS_HUD_PANEL_H - 1) y = FS_HUD_PANEL_H - 1;
+
+	out->x    = (int16_t)x;
+	out->y    = (int16_t)y;
+	out->font = FS_HUD_UNIT_FONT;
+	out->text = conv.suffix;
+	return 1;
 }

@@ -146,8 +146,12 @@ static LegacyConv_t legacy_conv(FS_HudQuantity_t type, int system)
     return info;
 }
 
-/* Render an element exactly the way activelook_mode0.c does, so the comparison
- * below is over the STRING that reaches the glasses, not over a double. */
+/* v0.0.18's element render, copied verbatim: ONE string, the suffix appended
+ * inside the value's own snprintf and therefore drawn in the value's font. The
+ * comparisons below are over the STRING that reaches the glasses, not over a
+ * double. v0.0.19 split the suffix off into its own txt in font 0 — see
+ * test_unit_show_off for the proof that with AL_Unit_Show off nothing changed.
+ */
 static void render(char *out, size_t n, double base, double mult,
                    const char *suffix, int decimals, int show_units)
 {
@@ -155,6 +159,14 @@ static void render(char *out, size_t n, double base, double mult,
         snprintf(out, n, "%.*f %s", decimals, base * mult, suffix);
     else
         snprintf(out, n, "%.*f", decimals, base * mult);
+}
+
+/* v0.0.19's element render: the value alone, always. A unit costs a SECOND
+ * draw, decided by FS_HudLayout_UnitDraw — never a longer string. */
+static void render_v19(char *out, size_t n, double base, double mult,
+                       int decimals)
+{
+    snprintf(out, n, "%.*f", decimals, base * mult);
 }
 
 static void test_unit_table_legacy(void)
@@ -281,6 +293,87 @@ static void test_unit_table_mismatch(void)
     }
 }
 
+/* --------------------------------------------------------------------------
+   AL_Unit_Show OFF must be v0.0.18 to the byte (v0.0.19)
+
+   The unit moved out of the value's snprintf and into its own txt in font 0.
+   A card in the field with the flag off — which is every card, since the
+   default is 0 and the built-in layout leaves it off — has to send the SAME
+   string and the SAME number of packets it sent before. Both halves are
+   checked here: the string against a verbatim copy of the v0.0.18 renderer,
+   and the packet count via FS_HudLayout_UnitDraw returning 0, which is what
+   the renderer tests before appending anything.
+   -------------------------------------------------------------------------- */
+static void test_unit_show_off(void)
+{
+    static const double samples[] = {
+        0.0, 0.5, -0.5, 1.0, 2.5, -2.5, 41.0, 55.5, 99.999, 100.0, -100.0,
+        1234.5, 3000.0, 4321.98765, 99999.0
+    };
+    static const FS_HudQuantity_t qtys[] = {
+        FS_HUD_QTY_SPEED, FS_HUD_QTY_DISTANCE, FS_HUD_QTY_ALTITUDE,
+        FS_HUD_QTY_ANGLE, FS_HUD_QTY_NONE
+    };
+    static const uint8_t fields[] = {
+        FS_HUD_FIELD_HSPEED, FS_HUD_FIELD_VSPEED, FS_HUD_FIELD_GLIDE,
+        FS_HUD_FIELD_BARO_ALT, FS_HUD_FIELD_HEADING, FS_HUD_FIELD_DIST_DEST
+    };
+
+    for (unsigned q = 0; q < sizeof(qtys)/sizeof(qtys[0]); q++) {
+        for (uint8_t units = 0; units <= FS_HUD_UNITS_MAX; units++) {
+            FS_HudUnitConv_t c = FS_HudLayout_UnitConv(qtys[q], units);
+
+            for (unsigned s = 0; s < sizeof(samples)/sizeof(samples[0]); s++) {
+                for (int dec = 0; dec <= 3; dec++) {
+                    char v18[48], v19[48];
+                    /* v0.0.18 with the flag OFF, against v0.0.19's only path. */
+                    render(v18, sizeof(v18), samples[s], c.multiplier,
+                           c.suffix, dec, 0);
+                    render_v19(v19, sizeof(v19), samples[s], c.multiplier, dec);
+                    CHECK(strcmp(v18, v19) == 0);
+                    /* And no suffix leaked into the value's own string. */
+                    CHECK(strstr(v19, c.suffix[0] ? c.suffix : "\x01") == NULL);
+                }
+            }
+
+            /* No second packet, for any field, font or precision. */
+            for (unsigned f = 0; f < sizeof(fields)/sizeof(fields[0]); f++) {
+                for (uint8_t font = 0; font <= FS_HUD_MAX_FONT; font++) {
+                    for (int8_t dec = 0; dec <= 3; dec++) {
+                        FS_HudElement_t el;
+                        FS_HudUnitDraw_t u;
+                        memset(&el, 0, sizeof(el));
+                        el.field      = fields[f];
+                        el.x          = 268;
+                        el.y          = 208;
+                        el.font       = font;
+                        el.units      = units;
+                        el.decimals   = dec;
+                        el.show_units = 0;
+                        CHECK(FS_HudLayout_UnitDraw(&el, qtys[q], 268, 208, &u) == 0);
+                    }
+                }
+            }
+        }
+    }
+
+    /* The flag ON is the change: one more draw, in font 0, never in the
+     * value's. The unitless fields stay bare — the flag is a no-op there, as
+     * it always was. */
+    FS_HudElement_t el;
+    FS_HudUnitDraw_t u;
+    memset(&el, 0, sizeof(el));
+    el.field      = FS_HUD_FIELD_HSPEED;
+    el.font       = 3;
+    el.units      = FS_HUD_UNITS_KMH;
+    el.show_units = 1;
+    CHECK(FS_HudLayout_UnitDraw(&el, FS_HUD_QTY_SPEED, 268, 208, &u) == 1);
+    CHECK(u.font == 0 && u.font != el.font);
+    CHECK(strcmp(u.text, "km/h") == 0);
+    el.field = FS_HUD_FIELD_GLIDE;
+    CHECK(FS_HudLayout_UnitDraw(&el, FS_HUD_QTY_NONE, 250, 147, &u) == 0);
+}
+
 int main(void)
 {
     test_build_clear();
@@ -292,6 +385,7 @@ int main(void)
     test_unit_table_legacy();
     test_unit_table_named();
     test_unit_table_mismatch();
+    test_unit_show_off();
     printf("activelook: %d/%d checks passed\n", g_total - g_fail, g_total);
     return g_fail ? 1 : 0;
 }

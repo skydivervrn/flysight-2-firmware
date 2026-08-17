@@ -47,7 +47,7 @@ AL_Shift_Y:    0   ; + moves it up. Both -120..120.
 AL_Line:       0   ; opens an element; the keys below describe it
 AL_Units:      0   ; 0 metric, 1 imperial, or one unit by name (see below)
 AL_Dec:        0   ; decimal places, 0..3
-AL_Unit_Show:  0   ; 0 = "148", 1 = "148 km/h"
+AL_Unit_Show:  0   ; 0 = "148", 1 = "148 km/h" (unit drawn small)
 AL_X:        268   ; 0..303
 AL_Y:        208   ; 0..255
 AL_Font:       3   ; 0..7
@@ -59,12 +59,16 @@ built-in layout to the file's; a block that omits a coordinate inherits the
 built-in position for that slot. Out-of-range numbers are clamped, not
 rejected — a hand-edited file cannot push an element off the panel.
 
-`AL_Unit_Show` (since v0.0.17) appends the element's unit — `km/h`, `m/s`,
-`mph`, `ft/s`, `m`, `ft`, `km`, `mi`, `deg` — after a single space. It defaults
-to **0**, and the built-in layout above leaves it off: those coordinates were
-approved on hardware with bare numbers, and whether a suffix at 64/75 px still
-clears the neighbouring element has not been checked through the glasses. Glide
-ratio and inverse glide ratio have no unit, so the key does nothing there. On
+`AL_Unit_Show` (since v0.0.17) draws the element's unit — `km/h`, `m/s`,
+`mph`, `ft/s`, `m`, `ft`, `km`, `mi`, `deg` — beside the value. **Since v0.0.19
+the unit is a separate draw in font 0 (24 px), not part of the value's string**:
+in the value's own font a `km/h` at 64 or 75 px was wider than the number it
+belonged to. It sits bottom-aligned with the value (see below), and the key
+still defaults to **0**, with the built-in layout leaving it off: those
+coordinates were approved on hardware with bare numbers, and whether even a
+24 px suffix clears the neighbouring element has not been checked through the
+glasses. Glide ratio and inverse glide ratio have no unit, so the key does
+nothing there. On
 the split status pieces (101–103, below) it turns on the **prefix** instead —
 `80%` becomes `A:80%` — and on 100, 104 and 105 it does nothing. Like `AL_Units`
 and `AL_Dec`, it states no position, so it does not by itself switch the HUD
@@ -77,12 +81,46 @@ at power-on), **100 status line**, **101–105 the pieces of the status line**.
 None of 14 and 100–105 needs a GPS fix; everything else reads `----` until the
 fix arrives.
 
+## Where the unit is drawn (since v0.0.19)
+
+The unit is its own `txt`, always in **font 0 (24 px)** — the smallest font
+loaded on ENGO 3, the one the status line uses. That is deliberately not a
+CONFIG.TXT key: the whole point is that the unit stays out of the value's way.
+
+- **Bottom-aligned with the value.** Glyphs hang down from the anchor, so the
+  unit's `y` is the value's `y` minus the difference in font heights — 24 px
+  text under a 64 px value starts 40 px lower and ends level with it.
+- **One gap past the value**, and since X is mirrored that means a *smaller* x:
+  `x_unit = x_value - width_reserved - 5`.
+- `width_reserved` is a **reservation**, not the width of today's reading:
+  a sign column, the integer digits the quantity can plausibly need (3 for a
+  speed or an angle, 4 for an altitude in metres, 5 in feet, 5 for a distance
+  in metres or feet, 3 in km or miles), and the decimal point and places the
+  element asks for. Fixed per element on purpose — a unit that tracked the live
+  string would slide left and right every time the reading crossed 100, which
+  reads as a fault, and an under-estimate is worse still: ENGO glyph cells are
+  opaque, so a cell landing on a digit erases part of it.
+
+**The per-font character widths behind that are UPPER-BOUND ESTIMATES, not
+measurements** (5/8 of the measured font height, rounded up). The protocol
+offers no way to ask: `fontList` (0x50) returns id and height only, there is no
+text-extent command, and a font cannot be read back. To replace them with real
+numbers, on the Mac bench (`Tools/engo_mac_hud_mock.py`, glasses on) draw
+`88888888` per font on a cleared screen and sweep a black `rectf` (0x25) in from
+one edge, reading `pixelCount` (0xA5) after each step: the position where the
+last lit pixel disappears is the string's true extent. The table and the
+recipe live in `FlySight/hud_layout.c`.
+
+Erring large only pushes the unit further from the value — empty space, which
+costs nothing. Element overlap is **not** checked: two elements whose boxes
+collide is still the wearer's business, exactly as it was before this release.
+
 ## The status line, whole or in pieces (since v0.0.18)
 
 Field `100` draws all five readings as one string in one font in one place:
 
 ```
-V A:80% F:76% N:12 v0.0.18
+V A:80% F:76% N:12 v0.0.19
 ```
 
 Fields `101`–`105` each draw one of them as an ordinary element, with its own
@@ -94,7 +132,7 @@ count moved somewhere it does not crowd an altitude, or nothing kept at all.
 | 101 | glasses battery     | `80%`     | `A:80%`                |
 | 102 | FlySight battery    | `76%`     | `F:76%`                |
 | 103 | satellites          | `12`      | `N:12`                 |
-| 104 | HUD version         | `v0.0.18` | `v0.0.18`              |
+| 104 | HUD version         | `v0.0.19` | `v0.0.19`              |
 | 105 | flight-detect mark  | `V` / `X` | same                   |
 
 The `%` is part of the value — a battery reading without it is a number nobody
