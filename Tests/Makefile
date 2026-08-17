@@ -2,7 +2,7 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -std=c99 -g
 
-TESTS = test_time test_activelook test_flight_detect test_engo_bind
+TESTS = test_time test_activelook test_flight_detect test_engo_bind test_hud_layout
 
 all: $(TESTS)
 
@@ -24,11 +24,15 @@ test_engo_bind: test_engo_bind.c ../FlySight/engo_bind.c ../FlySight/engo_bind.h
 	cp test_engo_bind.c ../FlySight/engo_bind.c ../FlySight/engo_bind.h engo_mock/ff.h engo_mock/log.h build_engo_bind/
 	$(CC) $(CFLAGS) -o test_engo_bind build_engo_bind/test_engo_bind.c build_engo_bind/engo_bind.c
 
+test_hud_layout: test_hud_layout.c ../FlySight/hud_layout.c ../FlySight/hud_layout.h
+	$(CC) $(CFLAGS) -I../FlySight -o test_hud_layout test_hud_layout.c ../FlySight/hud_layout.c
+
 run: all
 	@echo "=== test_time ===";          ./test_time
 	@echo "=== test_activelook ===";    ./test_activelook
 	@echo "=== test_flight_detect ==="; ./test_flight_detect
 	@echo "=== test_engo_bind ===";     ./test_engo_bind
+	@echo "=== test_hud_layout ===";   ./test_hud_layout
 
 clean:
 	rm -f $(TESTS)

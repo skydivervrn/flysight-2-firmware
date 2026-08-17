@@ -25,6 +25,7 @@
 #include "activelook_client.h"    // For FS_ActiveLook_Client_WriteWithoutResp
 #include "activelook_proto.h"     // For AL_BuildFrame, AL_BatteryPct, AL_CMD_*, AL_HOLD/FLUSH
 #include "config.h"               // For FS_Config_Get()
+#include "hud_layout.h"           // For the element list and the global offset
 #include "engo_bind.h"            // For FS_EngoBind_CommitIfPending()
 #include "flight_detect.h"        // For FS_FlightDetect_InFlight()
 #include "flight_params.h"
@@ -51,17 +52,17 @@
  * Then the string on the glasses says exactly which build is running — the
  * whole point of this marker (Firmware_Ver in flysight.txt is unreliable). */
 #ifndef HUD_VERSION
-#define HUD_VERSION "0.0.15"
+#define HUD_VERSION "0.0.16"
 #endif
 
 /* Fonts VERIFIED on ENGO 3 (this unit) via Mac BLE bench 2026-07-20 — fontList
  * (0x50) returned 8 loaded fonts (id/height px): 0/24 1/24 6/32 2/38 7/48 3/64
  * 4/75 5/82, and fonts 3 & 4 RENDER FINE (the old "3/4 = garbage" finding was a
  * clipping artefact, not a missing font). 24 px (f0/f1) is the smallest loaded;
- * no bold variants are pre-installed. */
-#define HEADER_FONT 0    /* 24 px */
-#define SPEED_FONT  3    /* 64 px — HSpd + VSpd side by side */
-#define BIG_FONT    4    /* 75 px — GR and Alt rows */
+ * no bold variants are pre-installed.
+ *
+ * Which font each element uses is now part of the layout (hud_layout.h), not
+ * baked in here. */
 
 const char *FS_ActiveLook_Mode0_HudVersion(void)
 {
@@ -243,56 +244,27 @@ static const AL_Mode0_LineMap_t s_lineMap[] =
     // Mode 8, 9, 10?
     { FS_CONFIG_MODE_DIVE_ANGLE,               "Dive:", FS_UNIT_TYPE_ANGLE,    LN_DiveAngle    }, // 11
     { FS_CONFIG_MODE_ALTITUDE,                 "Alt:",  FS_UNIT_TYPE_ALTITUDE, LN_Altitude     }, // 12
-    { 13,                                      "Hdg:",  FS_UNIT_TYPE_ANGLE,    LN_Heading      }, // Mode 13 (Heading)
+    { FS_HUD_FIELD_HEADING,                    "Hdg:",  FS_UNIT_TYPE_ANGLE,    LN_Heading      }, // 13
+    { FS_HUD_FIELD_BARO_ALT,                   "Alt:",  FS_UNIT_TYPE_ALTITUDE, LN_BaroAltitude }, // 14
 };
 static const unsigned s_lineMapCount = sizeof(s_lineMap) / sizeof(s_lineMap[0]);
 
-/**
- * Updated line spec: stores only typeId and label.
- * Units and value calculation/conversion happen dynamically.
- */
-typedef struct {
-    const char    *label;      // e.g. "VSpd:"
-    LineValueFn_t  fn;         // value getter (base units)
-    double         multiplier; // applied to the base value before display
-    int32_t        decimals;   // decimal places
-    uint8_t        needsFix;   // 1 = requires 3D GPS fix; 0 = always valid (baro)
-} AL_Mode0_LineSpec_t;
+/* The live layout: what is drawn, where, in which font. Taken from CONFIG.TXT
+ * when the file positions anything, otherwise the tuned-on-hardware built-in
+ * (see hud_layout.c). Resolved once per Init, i.e. per glasses connection. */
+static FS_HudLayout_t s_layout;
 
-/* Maximum number of data lines in mode 0 (matches s_lineSpecs array bound). */
-#define AL_MODE0_MAX_LINES  4
+/* Longest string an element can render. The status line is the long one
+ * ("X A:100% F:100% N:12 v0.0.16-n.abc1234"); values are far shorter. */
+#define AL_MODE0_MAX_TEXT  48
 
-static AL_Mode0_LineSpec_t s_lineSpecs[AL_MODE0_MAX_LINES];
-static uint8_t s_numLines = 0;   /* number of active lines (fixed default set) */
-
-/* Default HUD lines, baked in so the glasses work WITHOUT any /config.txt editing.
- * Speeds are RAW GPS (no SAS) so the HUD matches skyderby's ground-speed charts;
- * Alt stays barometric (works without a fix, zeroed at power-on). */
-static const AL_Mode0_LineSpec_t s_defaultLines[] = {
-    { "HSpd:", LN_HSpeed,       3.6, 0, 1 },   /* horizontal speed, km/h, raw GPS */
-    { "VSpd:", LN_VSpeed,       3.6, 0, 1 },   /* vertical speed, km/h, GNSS velD (+ = down),
-                                                  raw — chosen over baro for stability
-                                                  (track analysis 2026-07-22) */
-    { "GR:",   LN_GlideRatio,   1.0, 2, 1 },
-    { "Alt:",  LN_BaroAltitude, 1.0, 0, 0 },
-};
-
-/**
- * We'll also keep a "setup" step variable for multi-step layout creation.
- */
-static int s_step = 0;
-
-/*
- * Last-displayed strings for change-detection.
- * Index 0 = heading (battery/status), indices 1..4 = data lines.
- */
-static char s_lastHeading[40];
-static char s_lastLine[AL_MODE0_MAX_LINES][24];
+/* Last-displayed string per element, for change detection. */
+static char s_lastText[FS_HUD_MAX_ELEMENTS][AL_MODE0_MAX_TEXT];
 
 /* Header (info line) cache + rebuild divider — the header string is rebuilt only
  * every 5th tick to keep sat/battery jitter from forcing a full redraw burst
  * every second (see the rate-limit comment in Mode0_Update). */
-static char    battLevels[60];
+static char    battLevels[AL_MODE0_MAX_TEXT];
 static uint8_t s_hdrDivider;
 
 /* --------------------------------------------------------------------------
@@ -350,12 +322,6 @@ static UnitConversionInfo_t AL_GetUnitConversion(
 /* --------------------------------------------------------------------------
    4. Helpers for Sending Commands / Building Layout
    -------------------------------------------------------------------------- */
-
-/* A helper to do a single WriteWithoutResp to the BLE client. */
-static void AL_SendRaw(const uint8_t *data, uint16_t length)
-{
-    FS_ActiveLook_Client_WriteWithoutResp(data, length);
-}
 
 /* --------------------------------------------------------------------------
    Resumable frame: the HUD frame (~12 commands) is BUILT into a packet list,
@@ -438,197 +404,6 @@ bool FS_ActiveLook_Mode0_DrainFrame(void)
     return true;
 }
 
-/**
- * Build status layout
- */
-static uint8_t AL_BuildStatus(uint8_t layoutId,
-                              uint8_t *outBuf)
-{
-    uint8_t idx = 0;
-    outBuf[idx++] = 0xFF;
-    outBuf[idx++] = 0x60;  // "layoutSave"
-    outBuf[idx++] = 0x00;  // 1B length
-    uint8_t lenPos = idx++;
-
-    // layout ID
-    outBuf[idx++] = layoutId;
-
-    // Additional commands size placeholder
-    uint8_t addCmdSizePos = idx++;
-
-    // X, Y, Width, Height, color, etc. Hard-coded example
-    outBuf[idx++] = 0x00;
-    outBuf[idx++] = 0x00;
-    outBuf[idx++] = 0x00;
-    outBuf[idx++] = 0x01;
-    outBuf[idx++] = 0x30;
-    outBuf[idx++] = 0x28;
-    outBuf[idx++] = 15;
-    outBuf[idx++] = 0;
-    outBuf[idx++] = 1;
-    outBuf[idx++] = 1;
-    outBuf[idx++] = 1;
-    outBuf[idx++] = 5;
-    outBuf[idx++] = 35;
-    outBuf[idx++] = 4;
-    outBuf[idx++] = 1;
-
-    // Build sub-commands for label & units
-    uint8_t extra[64];
-    uint8_t e = 0;
-
-    // copy extras
-    outBuf[addCmdSizePos] = e;
-    memcpy(&outBuf[idx], extra, e);
-    idx += e;
-
-    outBuf[idx++] = 0xAA; // footer
-    outBuf[lenPos] = idx; // fill length
-
-    return idx;
-}
-
-/**
- * Build flight parameter layout
- */
-static uint8_t AL_BuildLayout(uint8_t layoutId,
-                              const char *headingText,
-                              const char *unitsText,
-                              uint8_t *outBuf)
-{
-    uint8_t idx = 0;
-    outBuf[idx++] = 0xFF;
-    outBuf[idx++] = 0x60;  // "layoutSave"
-    outBuf[idx++] = 0x00;  // 1B length
-    uint8_t lenPos = idx++;
-
-    // layout ID
-    outBuf[idx++] = layoutId;
-
-    // Additional commands size placeholder
-    uint8_t addCmdSizePos = idx++;
-
-    // X, Y, Width, Height, color, etc. Hard-coded example
-    outBuf[idx++] = 0x00;
-    outBuf[idx++] = 0x00;
-    outBuf[idx++] = 0x00;
-    outBuf[idx++] = 0x01;
-    outBuf[idx++] = 0x30;
-    outBuf[idx++] = 0x28;
-    outBuf[idx++] = 15;   // foreColor
-    outBuf[idx++] = 0;    // backColor
-    outBuf[idx++] = 1;    // font  (match the WORKING status layout)
-    outBuf[idx++] = 1;    // textValid
-    outBuf[idx++] = 1;    // textX hi
-    outBuf[idx++] = 5;    // textX lo  -> 261 (right-anchored for ENGO 3 X-mirror)
-    outBuf[idx++] = 35;   // textY  (inside clipH=40; was 40 = ON the clip edge -> invisible)
-    outBuf[idx++] = 4;    // rotation = 4 (ENGO 3)
-    outBuf[idx++] = 1;    // opacity
-
-    /* No additional sub-commands. The layout "text" sub-command (0x09) encoding is
-     * unreliable on ENGO 3 — a malformed sub-command makes the glasses reject the
-     * whole layoutSave, so layouts 10-13 never existed and their page slots stayed
-     * blank (only the sub-command-free status layout rendered). We now render the
-     * data lines exactly like the status layout and prepend the label to the
-     * dynamic value string in the page update instead. */
-    (void)headingText; (void)unitsText;
-    uint8_t e = 0;
-    outBuf[addCmdSizePos] = e;
-
-    outBuf[idx++] = 0xAA; // footer
-    outBuf[lenPos] = idx; // fill length
-
-    return idx;
-}
-
-/**
- * Build a page referencing layout #10..#14
- */
-static uint8_t AL_BuildPage(uint8_t pageId, uint8_t *outBuf)
-{
-    // Read config
-    const FS_Config_Data_t *cfg = FS_Config_Get();
-
-    uint8_t idx = 0;
-    outBuf[idx++] = 0xFF;
-    outBuf[idx++] = 0x80;
-    outBuf[idx++] = 0x00;
-    uint8_t lenPos = idx++;
-
-    outBuf[idx++] = pageId;
-
-    outBuf[idx++] = 14;
-    outBuf[idx++] = 0x00;
-    outBuf[idx++] = 0x00;
-    outBuf[idx++] = 138 + 40;
-
-    for (int i = 0; i < cfg->num_al_lines; i++)
-    {
-        outBuf[idx++] = 10 + i;
-        outBuf[idx++] = 0x00;
-        outBuf[idx++] = 0x00;
-        outBuf[idx++] = 133 - 40 * i;
-    }
-
-    outBuf[idx++] = 0xAA;
-    outBuf[lenPos] = idx;
-    return idx;
-}
-
-/**
- * Build a single pageUpdate command with 4 lines separated by '\0'.
- */
-static uint8_t AL_BuildPageUpdate(uint8_t pageId,
-                                  const char *heading,
-                                  const char *line1,
-                                  const char *line2,
-                                  const char *line3,
-                                  const char *line4,
-                                  uint8_t *outBuf)
-{
-    uint8_t idx = 0;
-    outBuf[idx++] = 0xFF;
-    outBuf[idx++] = 0x86; // "pageClearAndDisplay"
-    outBuf[idx++] = 0x00;
-    uint8_t lenPos = idx++;
-
-    outBuf[idx++] = pageId;
-
-    // heading
-    size_t lh = strlen(heading);
-    memcpy(&outBuf[idx], heading, lh);
-    idx += lh;
-    outBuf[idx++] = 0;
-
-    // line1
-    size_t l1 = strlen(line1);
-    memcpy(&outBuf[idx], line1, l1);
-    idx += l1;
-    outBuf[idx++] = 0;
-
-    // line2
-    size_t l2 = strlen(line2);
-    memcpy(&outBuf[idx], line2, l2);
-    idx += l2;
-    outBuf[idx++] = 0;
-
-    // line3
-    size_t l3 = strlen(line3);
-    memcpy(&outBuf[idx], line3, l3);
-    idx += l3;
-    outBuf[idx++] = 0;
-
-    // line4
-    size_t l4 = strlen(line4);
-    memcpy(&outBuf[idx], line4, l4);
-    idx += l4;
-    outBuf[idx++] = 0;
-
-    outBuf[idx++] = 0xAA;
-    outBuf[lenPos] = idx;
-    return idx;
-}
-
 /* --------------------------------------------------------------------------
    3. Mode0 Implementation
    -------------------------------------------------------------------------- */
@@ -647,38 +422,33 @@ static const AL_Mode0_LineMap_t* FindLineMapEntry(uint8_t typeId) {
 /**
  * FS_ActiveLook_Mode0_Init()
  *
- *  - Reset our s_step to 0
- *  - Read the config => al_line_1..4
- *  - For each of the 4 lines, find a matching entry in s_lineMap
- *    (by typeId) and store it in s_lineSpecs[i].
+ * Resolve the layout to draw, and clear the change-detection state so the
+ * first update after a connection always sends a full frame.
  */
 void FS_ActiveLook_Mode0_Init(void)
 {
-    s_step = 0;
+    const FS_Config_Data_t *cfg = FS_Config_Get();
 
-    /* Use the baked-in default line set (VSpd, GR, Hdg, Alt) so the HUD works
-     * out of the box without any /config.txt editing. */
-    s_numLines = (uint8_t)(sizeof(s_defaultLines) / sizeof(s_defaultLines[0]));
-    if (s_numLines > AL_MODE0_MAX_LINES)
-        s_numLines = AL_MODE0_MAX_LINES;
-
-    for (int i = 0; i < AL_MODE0_MAX_LINES; i++)
+    if (cfg->al_layout_valid)
     {
-        if (i < s_numLines) {
-            s_lineSpecs[i] = s_defaultLines[i];
-        } else {
-            s_lineSpecs[i].label      = "";
-            s_lineSpecs[i].fn         = NULL;
-            s_lineSpecs[i].multiplier = 1.0;
-            s_lineSpecs[i].decimals   = 0;
-            s_lineSpecs[i].needsFix   = 0;
-        }
+        /* The file positions its own elements — use it as it stands. */
+        s_layout = cfg->al_layout;
     }
+    else
+    {
+        /* Nothing positioned in CONFIG.TXT: the built-in layout, tuned on
+         * hardware and approved pixel by pixel (Docs/HUD_LAYOUT.md). The
+         * global offset still applies — it is a fit adjustment for the
+         * wearer's glasses, not part of the layout. */
+        FS_HudLayout_Default(&s_layout);
+        s_layout.shift_x = cfg->al_layout.shift_x;
+        s_layout.shift_y = cfg->al_layout.shift_y;
+    }
+    FS_HudLayout_Clamp(&s_layout);
 
     /* Reset change-detection buffers so first update always sends */
-    s_lastHeading[0] = '\0';
-    for (int i = 0; i < AL_MODE0_MAX_LINES; i++)
-        s_lastLine[i][0] = '\0';
+    for (int i = 0; i < FS_HUD_MAX_ELEMENTS; i++)
+        s_lastText[i][0] = '\0';
     battLevels[0] = '\0';   /* header cache: rebuild immediately on next tick */
     s_hdrDivider  = 0;
     AL_FrameReset();        /* discard any frame left over from a dropped link */
@@ -703,15 +473,10 @@ FS_ActiveLook_SetupStatus_t FS_ActiveLook_Mode0_Setup(void)
 /**
  * FS_ActiveLook_Mode0_Update()
  *
- * Called periodically to update the display.
- * - Gets current GNSS data.
- * - For each line:
- * - Finds the corresponding map entry using stored typeId.
- * - Calls the base value function (fn).
- * - Gets the correct unit conversion info (multiplier).
- * - Calculates the display value by applying the multiplier.
- * - Formats the display value into a string.
- * - Builds and sends the "pageClearAndDisplay" command with the 4 formatted value strings.
+ * Called periodically to redraw the display. Walks the resolved layout: each
+ * element is turned into a string (a formatted value, or the status line),
+ * compared with what is already on the glasses, and — if anything at all
+ * changed — the whole screen is redrawn as one clear+txt frame.
  */
 void FS_ActiveLook_Mode0_Update(void)
 {
@@ -724,37 +489,6 @@ void FS_ActiveLook_Mode0_Update(void)
     const FS_GNSS_Data_t *gnss = FS_GNSS_GetData();
     const FS_VBAT_Data_t *vbat = FS_VBAT_GetData();
     uint8_t alBatt = FS_ActiveLook_Client_GetBatteryLevel();
-
-    /* Use the baked-in default line set (independent of /config.txt). */
-    int numLines = s_numLines;
-    if (numLines > AL_MODE0_MAX_LINES)
-        numLines = AL_MODE0_MAX_LINES;
-
-    char lineValueStr[AL_MODE0_MAX_LINES][24]; // value strings (label drawn separately)
-
-    /* Zero-init all line strings — unused lines stay empty, not garbage */
-    for (int i = 0; i < AL_MODE0_MAX_LINES; i++)
-        lineValueStr[i][0] = '\0';
-
-    // For each line, compute the value via its getter + multiplier
-    for (int i = 0; i < numLines; i++)
-    {
-        bool display_invalid = false;
-
-        if (s_lineSpecs[i].fn == NULL) {
-            display_invalid = true;                       // unused/empty line
-        } else if (s_lineSpecs[i].needsFix && gnss->gpsFix != 3) {
-            display_invalid = true;                       // GPS-derived line, no 3D fix yet
-        }
-
-        if (!display_invalid) {
-            double v = s_lineSpecs[i].fn(gnss) * s_lineSpecs[i].multiplier;
-            snprintf(lineValueStr[i], sizeof(lineValueStr[i]), "%.*f",
-                     (int)(s_lineSpecs[i].decimals), v);
-        } else {
-            snprintf(lineValueStr[i], sizeof(lineValueStr[i]), "----");
-        }
-    }
 
     // Build header text using AL_BatteryPct for consistent clamped math
 
@@ -783,14 +517,44 @@ void FS_ActiveLook_Mode0_Update(void)
     }
     s_hdrDivider = (uint8_t)((s_hdrDivider + 1) % 5);
 
+    /* --- Render each element of the layout to a string --- */
+    char text[FS_HUD_MAX_ELEMENTS][AL_MODE0_MAX_TEXT];
+    for (int i = 0; i < FS_HUD_MAX_ELEMENTS; i++)
+        text[i][0] = '\0';
+
+    for (int i = 0; i < s_layout.count; i++)
+    {
+        const FS_HudElement_t *el = &s_layout.el[i];
+
+        if (el->field == FS_HUD_FIELD_INFO) {
+            strncpy(text[i], battLevels, AL_MODE0_MAX_TEXT - 1);
+            text[i][AL_MODE0_MAX_TEXT - 1] = '\0';
+            continue;
+        }
+        if (el->field == FS_HUD_FIELD_NONE)
+            continue;
+
+        const AL_Mode0_LineMap_t *entry = FindLineMapEntry(el->field);
+
+        if (entry == NULL ||
+            (FS_HudLayout_FieldNeedsFix(el->field) && gnss->gpsFix != 3)) {
+            /* Unknown field, or a GPS-derived one with no 3D fix yet. */
+            snprintf(text[i], AL_MODE0_MAX_TEXT, "----");
+            continue;
+        }
+
+        UnitConversionInfo_t conv = AL_GetUnitConversion(
+                entry->unitType, (FS_Config_UnitSystem_t)el->units);
+        double v = entry->fn(gnss) * conv.multiplier;
+        snprintf(text[i], AL_MODE0_MAX_TEXT, "%.*f", (int)el->decimals, v);
+    }
+
     /* --- Change detection: skip the BLE write if nothing changed --- */
-    bool changed = (strcmp(battLevels, s_lastHeading) != 0);
-    if (!changed) {
-        for (int i = 0; i < numLines; i++) {
-            if (strcmp(lineValueStr[i], s_lastLine[i]) != 0) {
-                changed = true;
-                break;
-            }
+    bool changed = false;
+    for (int i = 0; i < s_layout.count; i++) {
+        if (strcmp(text[i], s_lastText[i]) != 0) {
+            changed = true;
+            break;
         }
     }
 
@@ -800,25 +564,10 @@ void FS_ActiveLook_Mode0_Update(void)
     }
 
     /* Update cached strings */
-    strncpy(s_lastHeading, battLevels, sizeof(s_lastHeading) - 1);
-    s_lastHeading[sizeof(s_lastHeading) - 1] = '\0';
-    for (int i = 0; i < numLines; i++) {
-        strncpy(s_lastLine[i], lineValueStr[i], sizeof(s_lastLine[i]) - 1);
-        s_lastLine[i][sizeof(s_lastLine[i]) - 1] = '\0';
+    for (int i = 0; i < s_layout.count; i++) {
+        strncpy(s_lastText[i], text[i], AL_MODE0_MAX_TEXT - 1);
+        s_lastText[i][AL_MODE0_MAX_TEXT - 1] = '\0';
     }
-
-    /* Layout tuned live on HW via the Mac BLE bench (Tools/engo_mac_hud_mock.py,
-     * session 2026-07-20) and approved by the user pixel by pixel:
-     *  - X is mirrored: x=296 anchors at the viewer's LEFT edge, text grows rightward
-     *  - Y not flipped: larger Y = higher; glyphs draw DOWNWARD from the anchor
-     *  - NO labels — values only (user request), positions must match s_defaultLines
-     *    order: HSpd, VSpd (one row, side by side), GR, Alt. */
-    static const struct { int16_t x, y; uint8_t font; } rowPos[AL_MODE0_MAX_LINES] = {
-        { 268, 208, SPEED_FONT },   /* HSpd, viewer-left  */
-        { 134, 208, SPEED_FONT },   /* VSpd, viewer-right */
-        { 250, 147, BIG_FONT   },   /* GR                 */
-        { 250,  73, BIG_FONT   },   /* Alt                */
-    };
 
     /* Build the whole frame as a packet list (any still-pending older frame is
      * discarded — fresher data beats finishing a stale frame), then start
@@ -830,9 +579,11 @@ void FS_ActiveLook_Mode0_Update(void)
     AL_FrameReset();
     AL_FrameAddHoldFlush(AL_HOLD);
     AL_FrameAddClear();
-    AL_FrameAddText(296, 232, HEADER_FONT, battLevels);            /* info line */
-    for (int i = 0; i < numLines; i++) {
-        AL_FrameAddText(rowPos[i].x, rowPos[i].y, rowPos[i].font, lineValueStr[i]);
+    for (int i = 0; i < s_layout.count; i++) {
+        int16_t x, y;
+        if (!FS_HudLayout_Place(&s_layout, (uint8_t)i, &x, &y))
+            continue;
+        AL_FrameAddText(x, y, s_layout.el[i].font, text[i]);
     }
     AL_FrameAddHoldFlush(AL_FLUSH);
     FS_ActiveLook_Mode0_DrainFrame();

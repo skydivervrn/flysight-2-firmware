@@ -26,10 +26,11 @@
 
 #include <stdint.h>
 
+#include "hud_layout.h"
+
 #define FS_CONFIG_MAX_ALARMS    20
 #define FS_CONFIG_MAX_WINDOWS   2
 #define FS_CONFIG_MAX_SPEECH    3
-#define FS_CONFIG_MAX_AL_LINES  4
 
 #define FS_CONFIG_MODEL_PORTABLE     0
 #define FS_CONFIG_MODEL_STATIONARY   2
@@ -89,13 +90,6 @@ typedef struct
 	uint8_t units;
 	int32_t decimals;
 } FS_Config_Speech_t;
-
-typedef struct
-{
-	uint8_t mode;
-	FS_Config_UnitSystem_t units;
-	int32_t decimals;
-} FS_Config_AL_Line_t;
 
 typedef struct
 {
@@ -175,8 +169,11 @@ typedef struct
 	uint8_t  al_mode;
 	uint32_t al_rate;
 
-	FS_Config_AL_Line_t al_lines[FS_CONFIG_MAX_AL_LINES];
-	uint8_t  num_al_lines;
+	/* HUD layout. `al_layout_valid` is 0 until the file positions something
+	 * (an AL_X / AL_Y / AL_Font key); until then the HUD draws its built-in
+	 * layout, so an untouched CONFIG.TXT keeps the tuned-on-hardware look. */
+	FS_HudLayout_t al_layout;
+	uint8_t  al_layout_valid;
 
 	// Flag to control whether navigation modes are allowed
 	uint8_t  enable_nav;

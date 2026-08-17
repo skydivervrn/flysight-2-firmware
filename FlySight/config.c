@@ -255,6 +255,18 @@ static const char defaultConfig[] =
 		"                     1 = Default mode\n"
 		"AL_Rate:     500 ; ActiveLook rate (ms)\n"
 		"\n"
+		"; HUD position. Shifts the whole picture, for glasses that sit a\n"
+		"; little off-centre. Both are in pixels, as the WEARER sees it:\n"
+		"; positive X moves the picture right, positive Y moves it up.\n"
+		"\n"
+		"AL_Shift_X:    0 ; -120 to 120\n"
+		"AL_Shift_Y:    0 ; -120 to 120\n"
+		"\n"
+		"; HUD layout. Each AL_Line starts one element; the keys under it\n"
+		"; describe that element. Screen is 304 x 256. X is MIRRORED: x=296\n"
+		"; is the wearer's LEFT edge, x=0 the right one. Larger Y is higher,\n"
+		"; and text hangs DOWN from its anchor.\n"
+		"\n"
 		"AL_Line:       0 ; ActiveLook line value\n"
 		"                 ;   0 = Horizontal speed\n"
 		"                 ;   1 = Vertical speed\n"
@@ -267,23 +279,45 @@ static const char defaultConfig[] =
 		"                 ;   11 = Dive angle\n"
 		"                 ;   12 = Altitude above DZ_Elev\n"
 		"                 ;   13 = Course\n"
+		"                 ;   14 = Altitude, barometric (zeroed at power-on)\n"
+		"                 ;   100 = Status line (battery, satellites, version)\n"
 		"AL_Units:      0 ; ActiveLook units\n"
 		"                 ;   0 = km/h or m\n"
 		"                 ;   1 = mph or feet\n"
-		"AL_Dec:        1 ; ActiveLook precision\n"
+		"AL_Dec:        0 ; ActiveLook precision\n"
 		"                 ;   Decimal places\n"
+		"AL_X:        268 ; Position, 0 to 303\n"
+		"AL_Y:        208 ; Position, 0 to 255\n"
+		"AL_Font:       3 ; Text size\n"
+		"                 ;   0, 1 = 24 px   6 = 32 px   2 = 38 px\n"
+		"                 ;   7 = 48 px      3 = 64 px   4 = 75 px\n"
+		"                 ;   5 = 82 px\n"
 		"\n"
 		"AL_Line:       1 ; Vertical speed\n"
 		"AL_Units:      0 ; km/h\n"
-		"AL_Dec:        1 ; Decimal places\n"
+		"AL_Dec:        0 ; Decimal places\n"
+		"AL_X:        134\n"
+		"AL_Y:        208\n"
+		"AL_Font:       3\n"
 		"\n"
 		"AL_Line:       2 ; Glide ratio\n"
 		"AL_Units:      0 ; No units\n"
 		"AL_Dec:        2 ; Decimal places\n"
+		"AL_X:        250\n"
+		"AL_Y:        147\n"
+		"AL_Font:       4\n"
 		"\n"
-		"AL_Line:      13 ; Course\n"
-		"AL_Units:      0 ; Degrees\n"
-		"AL_Dec:        0 ; Decimal places\n";
+		"AL_Line:      14 ; Altitude, barometric\n"
+		"AL_Units:      0 ; Metres\n"
+		"AL_Dec:        0 ; Decimal places\n"
+		"AL_X:        250\n"
+		"AL_Y:         73\n"
+		"AL_Font:       4\n"
+		"\n"
+		"AL_Line:     100 ; Status line\n"
+		"AL_X:        296\n"
+		"AL_Y:        232\n"
+		"AL_Font:       0\n";
 
 void FS_Config_Init(void)
 {
@@ -358,7 +392,12 @@ void FS_Config_Init(void)
 	*(config.al_id) = '\0';
 	config.al_mode        = 1;
 	config.al_rate        = 500;   /* 2 Hz HUD; safe with flow-control pacing */
-	config.num_al_lines   = 0;
+
+	/* Start from the built-in layout so an element the file mentions without
+	 * coordinates still has somewhere to land, and so a file with no AL_Line
+	 * at all leaves the tuned layout untouched. */
+	FS_HudLayout_Default(&config.al_layout);
+	config.al_layout_valid = 0;
 
 	// IMPORTANT: Navigation disabled by default
 	config.enable_nav     = 0;
@@ -535,27 +574,41 @@ FS_Config_Result_t FS_Config_Read(const char *filename)
 			config.speech[config.num_speech - 1].decimals = val;
 		}
 
-		if (!strcmp(name, "AL_Line") && config.num_al_lines < FS_CONFIG_MAX_AL_LINES)
+		/* HUD elements. One AL_Line opens an element; the AL_Units / AL_Dec /
+		 * AL_X / AL_Y / AL_Font keys that follow refine it, in any order, and
+		 * each may be omitted — an unstated coordinate keeps the built-in
+		 * position for that slot. Same shape as the Alarm_* and Sp_* blocks. */
+		if (!strcmp(name, "AL_Line") && config.al_layout.count < FS_HUD_MAX_ELEMENTS)
 		{
 			if (!(flags & CONFIG_FIRST_AL_LINE))
 			{
-				config.num_al_lines = 0;
+				config.al_layout.count = 0;
 				flags |= CONFIG_FIRST_AL_LINE;
 			}
 
-			++config.num_al_lines;
-			config.al_lines[config.num_al_lines - 1].mode = val;
-			config.al_lines[config.num_al_lines - 1].units = FS_UNIT_SYSTEM_IMPERIAL;
-			config.al_lines[config.num_al_lines - 1].decimals = 1;
+			FS_HudLayout_DefaultSlot(config.al_layout.count, (uint8_t)val,
+					&config.al_layout.el[config.al_layout.count]);
+			++config.al_layout.count;
 		}
-		if (!strcmp(name, "AL_Units") && config.num_al_lines <= FS_CONFIG_MAX_AL_LINES)
+		if (config.al_layout.count > 0)
 		{
-			config.al_lines[config.num_al_lines - 1].units = val;
+			FS_HudElement_t *el = &config.al_layout.el[config.al_layout.count - 1];
+
+			if (!strcmp(name, "AL_Units")) el->units    = val;
+			if (!strcmp(name, "AL_Dec"))   el->decimals = val;
+
+			/* Any of these three means the file is describing positions, so
+			 * the built-in layout steps aside in favour of the file's. */
+			if (!strcmp(name, "AL_X"))    { el->x    = val; config.al_layout_valid = 1; }
+			if (!strcmp(name, "AL_Y"))    { el->y    = val; config.al_layout_valid = 1; }
+			if (!strcmp(name, "AL_Font")) { el->font = val; config.al_layout_valid = 1; }
 		}
-		if (!strcmp(name, "AL_Dec") && config.num_al_lines <= FS_CONFIG_MAX_AL_LINES)
-		{
-			config.al_lines[config.num_al_lines - 1].decimals = val;
-		}
+
+		/* Global HUD offset — the "screen position" adjustment, in viewer
+		 * terms (positive X moves the image to the wearer's right, positive Y
+		 * moves it up). Applies to every element, layout or built-in. */
+		if (!strcmp(name, "AL_Shift_X")) config.al_layout.shift_x = val;
+		if (!strcmp(name, "AL_Shift_Y")) config.al_layout.shift_y = val;
 
 		if (!strcmp(name, "AL_ID"))
 		{
@@ -580,6 +633,10 @@ FS_Config_Result_t FS_Config_Read(const char *filename)
 	}
 
 	f_close(&configFile);
+
+	/* A hand-edited file can name any number at all; fold it into range once,
+	 * here, so nothing downstream has to. */
+	FS_HudLayout_Clamp(&config.al_layout);
 
 	return FS_CONFIG_OK;
 }
