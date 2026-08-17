@@ -72,6 +72,22 @@ xxd Firmware_To_Deploy/B2_UserApp.sfb | head -1
 Recovery: the bootloader always persists. If a build does not boot, re-flash an
 official `APP.SFB` (flysight.ca) the same way — no programmer needed.
 
+## 4b. Or flash it over Bluetooth, from the Mac
+
+`Tools/flysight_ble.py` does step 4 without a cable or a tablet: `--info` reads
+version/batch/mode/battery/MTU, `--upload` proves the transfer on a harmless
+path, and `--flash` uploads to `/FW/APP.SFB` and — only with `--really-install`
+— tells the bootloader to install it. Runbook, gates and the bonding dance:
+**`Docs/FLASH_OVER_BLE.md`**.
+
+```bash
+~/.venvs/ble/bin/python Tools/flysight_ble.py --info   # macOS sandbox OFF
+```
+
+USB stays the only route for three things: the **first bond** with a new Mac,
+firmware older than `v0.0.12` (no install-over-BLE command), and **recovery**
+from a failed install — the bootloader speaks no Bluetooth.
+
 ## Pitfalls (each of these cost a debug cycle)
 
 1. **GCC 14.x → app installs but won't boot.** Use Arm GNU **12.3** (matches

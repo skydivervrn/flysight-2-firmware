@@ -2,6 +2,11 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -std=c99 -g
 
+# The Mac-side BLE flasher's host tests (Tools/flysight_ble.py). Pure logic
+# only — CRS framing, the Go-Back-N window, the flash gates — so they need no
+# radio and no bleak, and any python3 will do.
+PYTHON = python3
+
 TESTS = test_time test_activelook test_flight_detect test_engo_bind test_hud_layout
 
 all: $(TESTS)
@@ -36,9 +41,10 @@ run: all
 	@echo "=== test_flight_detect ==="; ./test_flight_detect
 	@echo "=== test_engo_bind ===";     ./test_engo_bind
 	@echo "=== test_hud_layout ===";   ./test_hud_layout
+	@echo "=== test_flysight_ble ==="; $(PYTHON) test_flysight_ble.py
 
 clean:
 	rm -f $(TESTS)
-	rm -rf build_engo_bind $(addsuffix .dSYM,$(TESTS))
+	rm -rf build_engo_bind $(addsuffix .dSYM,$(TESTS)) __pycache__
 
 .PHONY: all run clean

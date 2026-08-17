@@ -36,6 +36,7 @@ Tests/test_engo_bind
 Tests/test_hud_layout
 Tests/build_engo_bind/
 Tests/*.dSYM/
+__pycache__/
 
 # Local working notes / device-specific runbooks (kept out of the public repo)
 CLAUDE.md
