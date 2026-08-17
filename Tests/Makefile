@@ -9,8 +9,11 @@ all: $(TESTS)
 test_time: test_time.c
 	$(CC) $(CFLAGS) -o test_time test_time.c
 
-test_activelook: test_activelook.c ../FlySight/activelook_proto.c ../FlySight/activelook_proto.h
-	$(CC) $(CFLAGS) -o test_activelook test_activelook.c ../FlySight/activelook_proto.c
+# hud_layout.c comes along for FS_HudLayout_UnitConv: the unit table moved out
+# of activelook_mode0.c — which no host test can link, it pulls in the HAL —
+# into the pure module in v0.0.18, and this is where it gets checked.
+test_activelook: test_activelook.c ../FlySight/activelook_proto.c ../FlySight/activelook_proto.h ../FlySight/hud_layout.c ../FlySight/hud_layout.h
+	$(CC) $(CFLAGS) -o test_activelook test_activelook.c ../FlySight/activelook_proto.c ../FlySight/hud_layout.c
 
 test_flight_detect: test_flight_detect.c ../FlySight/flight_detect.c ../FlySight/flight_detect.h
 	$(CC) $(CFLAGS) -I../FlySight -o test_flight_detect test_flight_detect.c ../FlySight/flight_detect.c

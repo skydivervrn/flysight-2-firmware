@@ -283,15 +283,25 @@ static const char defaultConfig[] =
 		"                 ;   13 = Course\n"
 		"                 ;   14 = Altitude, barometric (zeroed at power-on)\n"
 		"                 ;   100 = Status line (battery, satellites, version)\n"
+		"                 ;   The status line, in five separate pieces:\n"
+		"                 ;   101 = Glasses battery      102 = FlySight battery\n"
+		"                 ;   103 = Satellites           104 = HUD version\n"
+		"                 ;   105 = Takeoff marker\n"
 		"AL_Units:      0 ; ActiveLook units\n"
-		"                 ;   0 = km/h or m\n"
-		"                 ;   1 = mph or feet\n"
+		"                 ;   0 = metric      1 = imperial\n"
+		"                 ;   Or name one outright:\n"
+		"                 ;   2 = km/h   3 = m/s   4 = mph   5 = ft/s\n"
+		"                 ;   6 = m      7 = ft    8 = km    9 = mi\n"
+		"                 ;   A unit that does not fit the line (km on a\n"
+		"                 ;   speed) reads as the metric one.\n"
 		"AL_Dec:        0 ; ActiveLook precision\n"
 		"                 ;   Decimal places\n"
 		"AL_Unit_Show:  0 ; Draw the unit after the value\n"
 		"                 ;   0 = 148        1 = 148 km/h\n"
 		"                 ;   Costs panel width; the positions below were\n"
 		"                 ;   tuned with bare numbers.\n"
+		"                 ;   On 101, 102 and 103 it draws the prefix\n"
+		"                 ;   instead: 80% becomes A:80%.\n"
 		"AL_X:        268 ; Position, 0 to 303\n"
 		"AL_Y:        208 ; Position, 0 to 255\n"
 		"AL_Font:       3 ; Text size\n"
@@ -641,7 +651,17 @@ FS_Config_Result_t FS_Config_Read(const char *filename)
 		{
 			FS_HudElement_t *el = &config.al_layout.el[config.al_layout.count - 1];
 
-			if (!strcmp(name, "AL_Units")) el->units    = (val == 1) ? 1 : 0;
+			/* AL_Units names ONE unit (2..9) or one of the two old unit
+			 * SYSTEMS (0, 1). Out of range means metric, NOT the nearest end
+			 * of the range: clamping 42 up to `mi` would put a distance on a
+			 * speed. A unit that does not apply to the element's quantity —
+			 * km on a speed — is not rejected here either; it resolves to
+			 * that quantity's metric default when it is drawn
+			 * (FS_HudLayout_UnitConv), which is the only place that knows
+			 * what quantity the field measures. */
+			if (!strcmp(name, "AL_Units"))
+				el->units = (val >= 0 && val <= FS_HUD_UNITS_MAX)
+						? (uint8_t)val : FS_HUD_UNITS_METRIC;
 			if (!strcmp(name, "AL_Dec"))   el->decimals = CFG_CLAMP(val, 0, 3);
 
 			/* Draw the unit after the value ("148 km/h"). Like AL_Units and

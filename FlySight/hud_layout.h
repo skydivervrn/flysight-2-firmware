@@ -50,7 +50,7 @@
 #define FS_HUD_DEFAULT_SLOTS  4
 
 /* Field ids. 0..13 are the FS_CONFIG_MODE_* audio modes, reused verbatim so a
- * HUD element and an audio mode name the same quantity. 14 and 100 are HUD-only
+ * HUD element and an audio mode name the same quantity. 14 and 100+ are HUD-only
  * and start above the audio range on purpose. */
 #define FS_HUD_FIELD_HSPEED     0   /* horizontal speed, raw GPS               */
 #define FS_HUD_FIELD_VSPEED     1   /* vertical speed, GNSS velD, + = down     */
@@ -65,6 +65,19 @@
 #define FS_HUD_FIELD_HEADING    13
 #define FS_HUD_FIELD_BARO_ALT   14  /* barometric altitude, zeroed at power-on */
 #define FS_HUD_FIELD_INFO       100 /* the status line (battery/sats/version)  */
+
+/* The status line, taken apart (v0.0.18). Field 100 draws all five pieces as
+ * one string in one font in one place; 101..105 each draw one piece as an
+ * ordinary element, so a wearer can drop the version, move the satellite count
+ * somewhere it does not crowd an altitude, or keep nothing at all. Field 100
+ * stays exactly as it was — every card in the field has it. */
+#define FS_HUD_FIELD_AL_BATT    101 /* glasses battery, "80%"  / "A:80%"       */
+#define FS_HUD_FIELD_FS_BATT    102 /* FlySight battery, "76%" / "F:76%"       */
+#define FS_HUD_FIELD_SATS       103 /* satellites, "12"        / "N:12"        */
+#define FS_HUD_FIELD_VERSION    104 /* HUD version, "v0.0.18"                  */
+#define FS_HUD_FIELD_FD_MARK    105 /* flight-detect marker                    */
+#define FS_HUD_FIELD_STATUS_MAX 105 /* last of the status family               */
+
 #define FS_HUD_FIELD_NONE       255 /* empty slot: draws nothing               */
 
 /* Fonts loaded on ENGO 3, id -> height px (fontList 0x50, verified on HW):
@@ -76,9 +89,42 @@
  * the panel. */
 #define FS_HUD_MAX_SHIFT  120
 
-/* Unit systems, matching FS_Config_UnitSystem_t (metric = 0). */
-#define FS_HUD_UNITS_METRIC    0
-#define FS_HUD_UNITS_IMPERIAL  1
+/* Units. 0 and 1 are the two unit SYSTEMS the HUD started with (they resolve to
+ * whatever the field's quantity calls metric or imperial); 2..9 name ONE unit
+ * outright, because "imperial" is no answer for a wingsuit pilot who wants a
+ * vertical speed in m/s and a horizontal one in km/h at the same time.
+ * A value that does not apply to the element's quantity — say km on a speed —
+ * falls back to that quantity's metric default rather than rendering nonsense;
+ * see FS_HudLayout_UnitConv. */
+#define FS_HUD_UNITS_METRIC    0   /* the quantity's metric default   */
+#define FS_HUD_UNITS_IMPERIAL  1   /* the quantity's imperial default */
+#define FS_HUD_UNITS_KMH       2   /* speed                           */
+#define FS_HUD_UNITS_MS        3   /* speed                           */
+#define FS_HUD_UNITS_MPH       4   /* speed                           */
+#define FS_HUD_UNITS_FTS       5   /* speed                           */
+#define FS_HUD_UNITS_M         6   /* altitude, distance              */
+#define FS_HUD_UNITS_FT        7   /* altitude, distance              */
+#define FS_HUD_UNITS_KM        8   /* distance                        */
+#define FS_HUD_UNITS_MI        9   /* distance                        */
+#define FS_HUD_UNITS_MAX       9
+
+/* The physical quantity an element's field measures — what decides which of the
+ * units above apply to it. Lives here rather than in the renderer so the whole
+ * unit table is host-testable (Tests/test_activelook.c). */
+typedef enum
+{
+	FS_HUD_QTY_SPEED,     /* base unit m/s     */
+	FS_HUD_QTY_DISTANCE,  /* base unit m       */
+	FS_HUD_QTY_ALTITUDE,  /* base unit m       */
+	FS_HUD_QTY_ANGLE,     /* base unit degrees */
+	FS_HUD_QTY_NONE       /* unitless (glide ratio and its inverse) */
+} FS_HudQuantity_t;
+
+typedef struct
+{
+	double      multiplier;  /* base unit -> displayed unit */
+	const char *suffix;      /* "" when there is nothing to append */
+} FS_HudUnitConv_t;
 
 typedef struct
 {
@@ -96,10 +142,12 @@ typedef struct
  * layout in Docs/HUD_LAYOUT.md was approved on hardware with bare numbers, and
  * how much room a suffix takes at 64/75 px is a guess until someone looks at it
  * through the glasses — an untouched device must keep looking exactly as it does
- * today. The suffix comes from the renderer's unit table (activelook_mode0.c),
- * which is empty for the unitless fields (glide ratio, inverse glide ratio) and
- * never consulted for the status line, so the flag is a silent no-op there
- * rather than a special case anyone has to remember. */
+ * today. The suffix comes from FS_HudLayout_UnitConv below, which is empty for
+ * the unitless fields (glide ratio, inverse glide ratio) and never consulted for
+ * the status family, so the flag is a silent no-op there rather than a special
+ * case anyone has to remember — with one deliberate exception: on the split
+ * status pieces 101..103 the flag turns on the PREFIX ("A:", "F:", "N:"), which
+ * is the only thing distinguishing two battery percentages side by side. */
 
 typedef struct
 {
@@ -139,7 +187,22 @@ int FS_HudLayout_Place(const FS_HudLayout_t *layout, uint8_t i,
                        int16_t *out_x, int16_t *out_y);
 
 /* True if the field needs a 3D GPS fix to mean anything. Barometric altitude
- * and the info line do not; everything else does. */
+ * and the status family (100..105) do not; everything else does. NB the
+ * satellite count is precisely the reading a wearer wants BEFORE the fix
+ * arrives, so it reads 0, never "----". */
 int FS_HudLayout_FieldNeedsFix(uint8_t field);
+
+/* True for the status line and the five pieces it was split into (100..105):
+ * the fields the renderer builds from device state rather than from the line
+ * map, and for which AL_Units / AL_Dec are meaningless. */
+int FS_HudLayout_FieldIsStatus(uint8_t field);
+
+/* Multiplier and suffix for `qty` displayed in `units` (an FS_HUD_UNITS_*
+ * value, already clamped). A unit that does not apply to the quantity — km on
+ * a speed, m/s on an altitude — resolves to the quantity's METRIC default, so
+ * a hand-edited card cannot make the panel lie about which unit it is showing.
+ * Angles are always "deg"; the unitless quantities always have an empty
+ * suffix, which is what makes AL_Unit_Show a silent no-op there. */
+FS_HudUnitConv_t FS_HudLayout_UnitConv(FS_HudQuantity_t qty, uint8_t units);
 
 #endif /* HUD_LAYOUT_H_ */

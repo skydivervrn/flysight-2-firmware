@@ -68,11 +68,14 @@ void FS_HudLayout_DefaultSlot(uint8_t slot, uint8_t field, FS_HudElement_t *out)
 {
 	if (out == 0) return;
 
-	if (field == FS_HUD_FIELD_INFO)
+	if (FS_HudLayout_FieldIsStatus(field))
 	{
-		/* The info line keeps its own defaults wherever it appears in the
-		 * list — it is one line of small text, never one of the data rows.
-		 * It has no unit suffix to append, so show_units stays off. */
+		/* The info line — and each of the five pieces it splits into — keeps
+		 * its own defaults wherever it appears in the list: one line of small
+		 * text, never one of the 64/75 px data rows. A battery percentage
+		 * inheriting slot 0's 64 px font would be absurd. show_units stays off,
+		 * so a piece that lands here without an AL_Unit_Show of its own draws
+		 * bare, exactly as the whole line does today. */
 		out->field      = field;
 		out->x          = INFO_X;
 		out->y          = INFO_Y;
@@ -110,7 +113,11 @@ void FS_HudLayout_ClampElement(FS_HudElement_t *el)
 	el->y = clamp16(el->y, 0, FS_HUD_PANEL_H - 1);
 
 	if (el->font > FS_HUD_MAX_FONT)  el->font  = FS_HUD_MAX_FONT;
-	if (el->units > FS_HUD_UNITS_IMPERIAL) el->units = FS_HUD_UNITS_METRIC;
+
+	/* Units are a set of names, not a range: a number nobody has defined means
+	 * metric, not "the highest one we do have" — clamping 42 up to `mi` would
+	 * put a distance on a speed. */
+	if (el->units > FS_HUD_UNITS_MAX) el->units = FS_HUD_UNITS_METRIC;
 
 	if (el->decimals < 0) el->decimals = 0;
 	if (el->decimals > 3) el->decimals = 3;
@@ -158,15 +165,93 @@ int FS_HudLayout_Place(const FS_HudLayout_t *layout, uint8_t i,
 	return 1;
 }
 
+int FS_HudLayout_FieldIsStatus(uint8_t field)
+{
+	return (field >= FS_HUD_FIELD_INFO && field <= FS_HUD_FIELD_STATUS_MAX);
+}
+
 int FS_HudLayout_FieldNeedsFix(uint8_t field)
 {
+	if (FS_HudLayout_FieldIsStatus(field)) return 0;
+
 	switch (field)
 	{
 	case FS_HUD_FIELD_BARO_ALT:
-	case FS_HUD_FIELD_INFO:
 	case FS_HUD_FIELD_NONE:
 		return 0;
 	default:
 		return 1;
 	}
+}
+
+/* Conversion constants. Kept BIT-IDENTICAL to the ones activelook_mode0.c has
+ * used since v0.0.11 (M_PER_S_TO_KMH etc.), because a card in the field that
+ * says `AL_Units: 0` or `1` must render the same number on 0.0.18 as it did on
+ * 0.0.17 — a "more correct" mph factor here would be a silent change to
+ * everyone's panel. HUD_FEEDBACK.md quotes mph as 2.236936; 2.23694 is the same
+ * figure to the precision the firmware already ships, and using one constant for
+ * both `imperial` and the explicit `mph` is what keeps those two values from
+ * disagreeing in the third decimal. */
+#define M_PER_S_TO_KMH   3.6
+#define M_PER_S_TO_MPH   2.23694
+#define M_PER_S_TO_FT_S  3.28084
+#define METERS_TO_KM     0.001
+#define METERS_TO_MILES  0.000621371
+#define METERS_TO_FEET   3.28084
+
+FS_HudUnitConv_t FS_HudLayout_UnitConv(FS_HudQuantity_t qty, uint8_t units)
+{
+	FS_HudUnitConv_t info = { 1.0, "" };
+
+	switch (qty)
+	{
+	case FS_HUD_QTY_SPEED:      /* base m/s */
+		switch (units)
+		{
+		case FS_HUD_UNITS_MS:  info.multiplier = 1.0;             info.suffix = "m/s";  break;
+		case FS_HUD_UNITS_MPH:
+		case FS_HUD_UNITS_IMPERIAL:
+		                       info.multiplier = M_PER_S_TO_MPH;  info.suffix = "mph";  break;
+		case FS_HUD_UNITS_FTS: info.multiplier = M_PER_S_TO_FT_S; info.suffix = "ft/s"; break;
+		default:               /* metric, km/h, and anything that is not a
+		                        * speed unit at all */
+		                       info.multiplier = M_PER_S_TO_KMH;  info.suffix = "km/h"; break;
+		}
+		break;
+
+	case FS_HUD_QTY_DISTANCE:   /* base m */
+		switch (units)
+		{
+		case FS_HUD_UNITS_M:   info.multiplier = 1.0;             info.suffix = "m";    break;
+		case FS_HUD_UNITS_FT:  info.multiplier = METERS_TO_FEET;  info.suffix = "ft";   break;
+		case FS_HUD_UNITS_MI:
+		case FS_HUD_UNITS_IMPERIAL:
+		                       info.multiplier = METERS_TO_MILES; info.suffix = "mi";   break;
+		default:               /* metric, km, and anything that is not a
+		                        * distance unit at all */
+		                       info.multiplier = METERS_TO_KM;    info.suffix = "km";   break;
+		}
+		break;
+
+	case FS_HUD_QTY_ALTITUDE:   /* base m */
+		switch (units)
+		{
+		case FS_HUD_UNITS_FT:
+		case FS_HUD_UNITS_IMPERIAL:
+		                       info.multiplier = METERS_TO_FEET;  info.suffix = "ft";   break;
+		default:               /* metric, m, and anything that is not an
+		                        * altitude unit at all */
+		                       info.multiplier = 1.0;             info.suffix = "m";    break;
+		}
+		break;
+
+	case FS_HUD_QTY_ANGLE:      /* degrees, whatever the file asks for */
+		info.suffix = "deg";
+		break;
+
+	case FS_HUD_QTY_NONE:       /* unitless: no multiplier, no suffix */
+		break;
+	}
+
+	return info;
 }

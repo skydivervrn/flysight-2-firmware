@@ -52,7 +52,7 @@
  * Then the string on the glasses says exactly which build is running — the
  * whole point of this marker (Firmware_Ver in flysight.txt is unreliable). */
 #ifndef HUD_VERSION
-#define HUD_VERSION "0.0.17"
+#define HUD_VERSION "0.0.18"
 #endif
 
 /* Fonts VERIFIED on ENGO 3 (this unit) via Mac BLE bench 2026-07-20 — fontList
@@ -81,27 +81,13 @@ const char *FS_ActiveLook_Mode0_HudVersion(void)
    1. Unit System Definitions
    -------------------------------------------------------------------------- */
 
-// Enum to categorize the physical quantity a parameter represents
-typedef enum {
-    FS_UNIT_TYPE_SPEED,
-    FS_UNIT_TYPE_DISTANCE,
-    FS_UNIT_TYPE_ALTITUDE,
-    FS_UNIT_TYPE_ANGLE,
-    FS_UNIT_TYPE_NONE
-} FS_ParamUnitType_t;
-
-// Structure to hold conversion factor and unit suffix
-typedef struct {
-    double      multiplier;
-    const char* suffix;
-} UnitConversionInfo_t;
-
-// --- Conversion Constants ---
-#define M_PER_S_TO_KMH      3.6
-#define M_PER_S_TO_MPH      2.23694
-#define METERS_TO_KM        0.001
-#define METERS_TO_MILES     0.000621371
-#define METERS_TO_FEET      3.28084
+/* The quantity each field measures (FS_HUD_QTY_*), the unit table that turns it
+ * into a multiplier and a suffix (FS_HudLayout_UnitConv) and the unit ids the
+ * config may ask for (FS_HUD_UNITS_*) all live in hud_layout.{c,h} now. They
+ * moved out of this file in v0.0.18: nothing in this translation unit is
+ * host-testable (it pulls in the HAL, the GNSS driver and FatFs), and the unit
+ * table is exactly the part that has to be checked value by value — see
+ * Tests/test_activelook.c. */
 
 // Minimum announced altitude (mm)
 #define ALT_MIN_MM (1500L * 1000L)
@@ -223,7 +209,7 @@ static double LN_BaroAltitude(const FS_GNSS_Data_t *d) {
 typedef struct {
     uint8_t             typeId;   // ID from config (e.g., FS_CONFIG_MODE_HORIZONTAL_SPEED)
     const char         *label;    // Base text label (e.g., "HSpd:")
-    FS_ParamUnitType_t  unitType; // Type of quantity (Speed, Distance, etc.)
+    FS_HudQuantity_t    qty;      // Quantity measured (speed, distance, ...)
     LineValueFn_t       fn;       // Function returning the value in base units (m/s, m, deg)
 } AL_Mode0_LineMap_t;
 
@@ -233,19 +219,19 @@ typedef struct {
 */
 static const AL_Mode0_LineMap_t s_lineMap[] =
 {
-    { FS_CONFIG_MODE_HORIZONTAL_SPEED,         "HSpd:", FS_UNIT_TYPE_SPEED,    LN_HSpeed       }, // 0
-    { FS_CONFIG_MODE_VERTICAL_SPEED,           "VSpd:", FS_UNIT_TYPE_SPEED,    LN_VSpeed       }, // 1
-    { FS_CONFIG_MODE_GLIDE_RATIO,              "GR:",   FS_UNIT_TYPE_NONE,     LN_GlideRatio   }, // 2
-    { FS_CONFIG_MODE_INVERSE_GLIDE_RATIO,      "1/GR:", FS_UNIT_TYPE_NONE,     LN_InvGlideRatio}, // 3
-    { FS_CONFIG_MODE_TOTAL_SPEED,              "Spd:",  FS_UNIT_TYPE_SPEED,    LN_TotalSpeed   }, // 4
-    { FS_CONFIG_MODE_DIRECTION_TO_DESTINATION, "Dir:",  FS_UNIT_TYPE_ANGLE,    LN_DirToDest    }, // 5
-    { FS_CONFIG_MODE_DISTANCE_TO_DESTINATION,  "Dist:", FS_UNIT_TYPE_DISTANCE, LN_DistToDest   }, // 6
-    { FS_CONFIG_MODE_DIRECTION_TO_BEARING,     "Brg:",  FS_UNIT_TYPE_ANGLE,    LN_DirToBearing }, // 7
+    { FS_CONFIG_MODE_HORIZONTAL_SPEED,         "HSpd:", FS_HUD_QTY_SPEED,    LN_HSpeed       }, // 0
+    { FS_CONFIG_MODE_VERTICAL_SPEED,           "VSpd:", FS_HUD_QTY_SPEED,    LN_VSpeed       }, // 1
+    { FS_CONFIG_MODE_GLIDE_RATIO,              "GR:",   FS_HUD_QTY_NONE,     LN_GlideRatio   }, // 2
+    { FS_CONFIG_MODE_INVERSE_GLIDE_RATIO,      "1/GR:", FS_HUD_QTY_NONE,     LN_InvGlideRatio}, // 3
+    { FS_CONFIG_MODE_TOTAL_SPEED,              "Spd:",  FS_HUD_QTY_SPEED,    LN_TotalSpeed   }, // 4
+    { FS_CONFIG_MODE_DIRECTION_TO_DESTINATION, "Dir:",  FS_HUD_QTY_ANGLE,    LN_DirToDest    }, // 5
+    { FS_CONFIG_MODE_DISTANCE_TO_DESTINATION,  "Dist:", FS_HUD_QTY_DISTANCE, LN_DistToDest   }, // 6
+    { FS_CONFIG_MODE_DIRECTION_TO_BEARING,     "Brg:",  FS_HUD_QTY_ANGLE,    LN_DirToBearing }, // 7
     // Mode 8, 9, 10?
-    { FS_CONFIG_MODE_DIVE_ANGLE,               "Dive:", FS_UNIT_TYPE_ANGLE,    LN_DiveAngle    }, // 11
-    { FS_CONFIG_MODE_ALTITUDE,                 "Alt:",  FS_UNIT_TYPE_ALTITUDE, LN_Altitude     }, // 12
-    { FS_HUD_FIELD_HEADING,                    "Hdg:",  FS_UNIT_TYPE_ANGLE,    LN_Heading      }, // 13
-    { FS_HUD_FIELD_BARO_ALT,                   "Alt:",  FS_UNIT_TYPE_ALTITUDE, LN_BaroAltitude }, // 14
+    { FS_CONFIG_MODE_DIVE_ANGLE,               "Dive:", FS_HUD_QTY_ANGLE,    LN_DiveAngle    }, // 11
+    { FS_CONFIG_MODE_ALTITUDE,                 "Alt:",  FS_HUD_QTY_ALTITUDE, LN_Altitude     }, // 12
+    { FS_HUD_FIELD_HEADING,                    "Hdg:",  FS_HUD_QTY_ANGLE,    LN_Heading      }, // 13
+    { FS_HUD_FIELD_BARO_ALT,                   "Alt:",  FS_HUD_QTY_ALTITUDE, LN_BaroAltitude }, // 14
 };
 static const unsigned s_lineMapCount = sizeof(s_lineMap) / sizeof(s_lineMap[0]);
 
@@ -261,63 +247,20 @@ static FS_HudLayout_t s_layout;
 /* Last-displayed string per element, for change detection. */
 static char s_lastText[FS_HUD_MAX_ELEMENTS][AL_MODE0_MAX_TEXT];
 
-/* Header (info line) cache + rebuild divider — the header string is rebuilt only
- * every 5th tick to keep sat/battery jitter from forcing a full redraw burst
- * every second (see the rate-limit comment in Mode0_Update). */
-static char    battLevels[AL_MODE0_MAX_TEXT];
+/* Status snapshot + ONE shared rebuild divider. The whole status family — the
+ * old one-string info line (field 100) and the five pieces it was split into in
+ * v0.0.18 (101..105) — is rebuilt only every 5th tick, from the same snapshot,
+ * so the pieces always agree with each other and with the line. Sat count and
+ * battery jitter would otherwise change one of them nearly every tick, and any
+ * single changed string forces a full clear+redraw of the panel: splitting the
+ * line must not multiply the chances of that happening (see the rate-limit
+ * comment in Mode0_Update). */
+static char    battLevels[AL_MODE0_MAX_TEXT];  /* field 100, whole line     */
+static char    s_alBattStr[5];                 /* "??" or "0".."100"        */
+static uint8_t s_fsBattPct;
+static uint8_t s_numSV;
+static const char *s_fdMark = FD_MARK_IDLE;
 static uint8_t s_hdrDivider;
-
-/* --------------------------------------------------------------------------
-   3. Unit Conversion Logic (to be factored out later)
-   -------------------------------------------------------------------------- */
-
-/**
- * Gets the conversion multiplier and unit suffix string based on parameter type
- * and the selected unit system.
- */
-static UnitConversionInfo_t AL_GetUnitConversion(
-        FS_ParamUnitType_t type,
-        FS_Config_UnitSystem_t system) {
-    UnitConversionInfo_t info = {1.0, ""}; // Default: no conversion, no suffix
-
-    switch (type) {
-        case FS_UNIT_TYPE_SPEED: // Base unit: m/s
-            if (system == FS_UNIT_SYSTEM_METRIC) {
-                info.multiplier = M_PER_S_TO_KMH;
-                info.suffix = "km/h";
-            } else { // Imperial
-                info.multiplier = M_PER_S_TO_MPH;
-                info.suffix = "mph";
-            }
-            break;
-        case FS_UNIT_TYPE_DISTANCE: // Base unit: m
-             if (system == FS_UNIT_SYSTEM_METRIC) {
-                info.multiplier = METERS_TO_KM;
-                info.suffix = "km";
-            } else { // Imperial
-                info.multiplier = METERS_TO_MILES;
-                info.suffix = "mi";
-            }
-           break;
-        case FS_UNIT_TYPE_ALTITUDE: // Base unit: m
-            if (system == FS_UNIT_SYSTEM_METRIC) {
-                // info.multiplier = 1.0; // Default is already 1.0
-                info.suffix = "m";
-            } else { // Imperial
-                info.multiplier = METERS_TO_FEET;
-                info.suffix = "ft";
-            }
-            break;
-        case FS_UNIT_TYPE_ANGLE: // Base unit: degrees
-            // No conversion needed between metric/imperial for angles
-            info.suffix = "deg";
-            break;
-        case FS_UNIT_TYPE_NONE:  // Unitless
-            // No conversion, no suffix (defaults are correct)
-            break;
-    }
-    return info;
-}
 
 /* --------------------------------------------------------------------------
    4. Helpers for Sending Commands / Building Layout
@@ -418,6 +361,52 @@ static const AL_Mode0_LineMap_t* FindLineMapEntry(uint8_t typeId) {
     return NULL;
 }
 
+/**
+ * AL_StatusText()
+ *
+ * One element of the status family (100..105), rendered from the snapshot taken
+ * under the rebuild divider. `showPrefix` is the element's AL_Unit_Show flag: on
+ * the three readings it turns on the SAME one- or two-character prefix the whole
+ * line has always used, so a wearer who splits the line and switches the
+ * prefixes on gets back exactly the reading they had. It is not a unit — '%' is
+ * part of the value, since a battery percentage without it is a number nobody
+ * can place — but it is the same "tell me what this is" flag, and inventing a
+ * second key for it would be a key the app would have to learn for nothing.
+ * The version and the marker ignore the flag; AL_Units and AL_Dec are
+ * meaningless for all six and are ignored rather than rejected.
+ */
+static void AL_StatusText(uint8_t field, uint8_t showPrefix, char *out, size_t n)
+{
+    switch (field) {
+    case FS_HUD_FIELD_INFO:
+        strncpy(out, battLevels, n - 1);
+        out[n - 1] = '\0';
+        break;
+    case FS_HUD_FIELD_AL_BATT:
+        snprintf(out, n, "%s%s%%", showPrefix ? "A:" : "", s_alBattStr);
+        break;
+    case FS_HUD_FIELD_FS_BATT:
+        snprintf(out, n, "%s%d%%", showPrefix ? "F:" : "", (int)s_fsBattPct);
+        break;
+    case FS_HUD_FIELD_SATS:
+        /* No fix needed and none implied: this reads 0 before the first fix,
+         * which is precisely when a wearer looks at it. */
+        snprintf(out, n, "%s%d", showPrefix ? "N:" : "", (int)s_numSV);
+        break;
+    case FS_HUD_FIELD_VERSION:
+        /* Same string the whole line ends with — the point of it is to prove
+         * remotely which firmware is live on the glasses. */
+        snprintf(out, n, "v%s", HUD_VERSION);
+        break;
+    case FS_HUD_FIELD_FD_MARK:
+        snprintf(out, n, "%s", s_fdMark);
+        break;
+    default:
+        out[0] = '\0';
+        break;
+    }
+}
+
 
 /**
  * FS_ActiveLook_Mode0_Init()
@@ -449,7 +438,7 @@ void FS_ActiveLook_Mode0_Init(void)
     /* Reset change-detection buffers so first update always sends */
     for (int i = 0; i < FS_HUD_MAX_ELEMENTS; i++)
         s_lastText[i][0] = '\0';
-    battLevels[0] = '\0';   /* header cache: rebuild immediately on next tick */
+    battLevels[0] = '\0';   /* status snapshot: rebuild on the next tick */
     s_hdrDivider  = 0;
     AL_FrameReset();        /* discard any frame left over from a dropped link */
 }
@@ -488,32 +477,35 @@ void FS_ActiveLook_Mode0_Update(void)
 
     const FS_GNSS_Data_t *gnss = FS_GNSS_GetData();
     const FS_VBAT_Data_t *vbat = FS_VBAT_GetData();
-    uint8_t alBatt = FS_ActiveLook_Client_GetBatteryLevel();
-
-    // Build header text using AL_BatteryPct for consistent clamped math
-
-    char alBattStr[5];
-    if (alBatt == 255)
-        snprintf(alBattStr, sizeof(alBattStr), "??");
-    else
-        snprintf(alBattStr, sizeof(alBattStr), "%d", alBatt);
-
-    uint8_t fs_pct = AL_BatteryPct(vbat->voltage);
 
     /* Info/status line: takeoff marker (left-most), glasses batt, FlySight batt,
      * sat count, then the HUD version at the END (per request). The trailing
      * version also confirms REMOTELY which firmware is live on the glasses (if it
      * doesn't change after a flash, the glasses are frozen / the flash failed).
+     * Since v0.0.18 each of those five pieces can also be drawn on its own, as
+     * fields 101..105, in its own place and font — the snapshot below feeds both.
      *
-     * Rate-limited: the string is REBUILT only every 5th tick. Sat count / battery
-     * jitter otherwise changes the header nearly every tick, forcing a full
-     * clear+redraw burst each second even when the data lines are static —
+     * Rate-limited: the snapshot is REBUILT only every 5th tick. Sat count /
+     * battery jitter otherwise changes the header nearly every tick, forcing a
+     * full clear+redraw burst each second even when the data lines are static —
      * needless pressure on the glasses' command buffer (XCTrack: "not much
-     * bandwidth available"). Takeoff-marker latency of <=5 ticks is fine. */
+     * bandwidth available"). Takeoff-marker latency of <=5 ticks is fine, and
+     * has been the behaviour of the marker inside the line since v0.0.14. */
     if (s_hdrDivider == 0 || battLevels[0] == '\0') {
-        const char *fdMark = FS_FlightDetect_InFlight() ? FD_MARK_DETECTED : FD_MARK_IDLE;
+        uint8_t alBatt = FS_ActiveLook_Client_GetBatteryLevel();
+        if (alBatt == 255)
+            snprintf(s_alBattStr, sizeof(s_alBattStr), "??");
+        else
+            snprintf(s_alBattStr, sizeof(s_alBattStr), "%d", alBatt);
+
+        /* AL_BatteryPct for consistent clamped math. */
+        s_fsBattPct = AL_BatteryPct(vbat->voltage);
+        s_numSV     = gnss->numSV;
+        s_fdMark    = FS_FlightDetect_InFlight() ? FD_MARK_DETECTED : FD_MARK_IDLE;
+
         snprintf(battLevels, sizeof(battLevels),
-                 "%s A:%s%% F:%d%% N:%d v%s", fdMark, alBattStr, (int)fs_pct, gnss->numSV, HUD_VERSION);
+                 "%s A:%s%% F:%d%% N:%d v%s", s_fdMark, s_alBattStr,
+                 (int)s_fsBattPct, s_numSV, HUD_VERSION);
     }
     s_hdrDivider = (uint8_t)((s_hdrDivider + 1) % 5);
 
@@ -529,9 +521,8 @@ void FS_ActiveLook_Mode0_Update(void)
     {
         const FS_HudElement_t *el = &s_layout.el[i];
 
-        if (el->field == FS_HUD_FIELD_INFO) {
-            strncpy(text[i], battLevels, AL_MODE0_MAX_TEXT - 1);
-            text[i][AL_MODE0_MAX_TEXT - 1] = '\0';
+        if (FS_HudLayout_FieldIsStatus(el->field)) {
+            AL_StatusText(el->field, el->show_units, text[i], AL_MODE0_MAX_TEXT);
             continue;
         }
         if (el->field == FS_HUD_FIELD_NONE)
@@ -546,12 +537,12 @@ void FS_ActiveLook_Mode0_Update(void)
             continue;
         }
 
-        UnitConversionInfo_t conv = AL_GetUnitConversion(
-                entry->unitType, (FS_Config_UnitSystem_t)el->units);
+        FS_HudUnitConv_t conv = FS_HudLayout_UnitConv(entry->qty, el->units);
         double v = entry->fn(gnss) * conv.multiplier;
 
         /* AL_Unit_Show: append the suffix the conversion table already carries
-         * ("km/h", "mph", "m", "ft", "deg"), one space after the value. The
+         * ("km/h", "m/s", "mph", "ft/s", "m", "ft", "km", "mi", "deg" — whichever
+         * of them AL_Units resolved to), one space after the value. The
          * unitless fields (GR, 1/GR) come back with an empty suffix, so the
          * flag needs no special case for them — testing the suffix keeps a
          * stray trailing space off the panel. Worst case here is
