@@ -253,7 +253,9 @@ static const char defaultConfig[] =
 		"AL_Mode:       1 ; ActiveLook mode\n"
 		"                     0 = Not active\n"
 		"                     1 = Default mode\n"
-		"AL_Rate:     500 ; ActiveLook rate (ms)\n"
+		"AL_Rate:     250 ; ActiveLook rate (ms)\n"
+		"                 ;   4 Hz. Raise it (333, 500) if the glasses\n"
+		"                 ;   ever stop refreshing mid-flight.\n"
 		"\n"
 		"; HUD position. Shifts the whole picture, for glasses that sit a\n"
 		"; little off-centre. Both are in pixels, as the WEARER sees it:\n"
@@ -286,6 +288,10 @@ static const char defaultConfig[] =
 		"                 ;   1 = mph or feet\n"
 		"AL_Dec:        0 ; ActiveLook precision\n"
 		"                 ;   Decimal places\n"
+		"AL_Unit_Show:  0 ; Draw the unit after the value\n"
+		"                 ;   0 = 148        1 = 148 km/h\n"
+		"                 ;   Costs panel width; the positions below were\n"
+		"                 ;   tuned with bare numbers.\n"
 		"AL_X:        268 ; Position, 0 to 303\n"
 		"AL_Y:        208 ; Position, 0 to 255\n"
 		"AL_Font:       3 ; Text size\n"
@@ -296,6 +302,7 @@ static const char defaultConfig[] =
 		"AL_Line:       1 ; Vertical speed\n"
 		"AL_Units:      0 ; km/h\n"
 		"AL_Dec:        0 ; Decimal places\n"
+		"AL_Unit_Show:  0 ; No unit suffix\n"
 		"AL_X:        134\n"
 		"AL_Y:        208\n"
 		"AL_Font:       3\n"
@@ -303,6 +310,7 @@ static const char defaultConfig[] =
 		"AL_Line:       2 ; Glide ratio\n"
 		"AL_Units:      0 ; No units\n"
 		"AL_Dec:        2 ; Decimal places\n"
+		"AL_Unit_Show:  0 ; Glide ratio is unitless, so this does nothing\n"
 		"AL_X:        250\n"
 		"AL_Y:        147\n"
 		"AL_Font:       4\n"
@@ -310,6 +318,7 @@ static const char defaultConfig[] =
 		"AL_Line:      14 ; Altitude, barometric\n"
 		"AL_Units:      0 ; Metres\n"
 		"AL_Dec:        0 ; Decimal places\n"
+		"AL_Unit_Show:  0 ; Set to 1 for \"1200 m\"\n"
 		"AL_X:        250\n"
 		"AL_Y:         73\n"
 		"AL_Font:       4\n"
@@ -391,7 +400,15 @@ void FS_Config_Init(void)
 
 	*(config.al_id) = '\0';
 	config.al_mode        = 1;
-	config.al_rate        = 500;   /* 2 Hz HUD; safe with flow-control pacing */
+	/* 4 Hz HUD (was 500 = 2 Hz until v0.0.17). Asked for by the owner: at 2 Hz
+	 * the numbers visibly lag under canopy. 250 ms is inside the range the CB9
+	 * flow-control pacing was written for — the glasses throttle us with a STOP
+	 * byte and the frame drain resumes on TX-pool-available (activelook_mode0.c
+	 * DrainFrame) — but NOT yet flight-tested: 333 ms is the fastest rate ever
+	 * flown on this hardware. If the display processor starts hanging (the known
+	 * failure mode of over-driving the command buffer), put AL_Rate back to 333
+	 * in CONFIG.TXT before blaming anything else. */
+	config.al_rate        = 250;
 
 	/* Start from the built-in layout so an element the file mentions without
 	 * coordinates still has somewhere to land, and so a file with no AL_Line
@@ -425,10 +442,11 @@ FS_Config_Result_t FS_Config_Read(const char *filename)
 	uint8_t flags = 0;
 
 	/* True while the most recent AL_Line was ACCEPTED, i.e. there is an open
-	 * HUD element for AL_Units/AL_Dec/AL_X/AL_Y/AL_Font to refine. Without
-	 * this, keys under a rejected AL_Line (out-of-range id, or a 9th element)
-	 * would clobber the previous element — and a stray AL_X with no AL_Line
-	 * at all would edit the pre-filled default layout from FS_Config_Init. */
+	 * HUD element for AL_Units/AL_Dec/AL_Unit_Show/AL_X/AL_Y/AL_Font to refine.
+	 * Without this, keys under a rejected AL_Line (out-of-range id, or a 9th
+	 * element) would clobber the previous element — and a stray AL_X with no
+	 * AL_Line at all would edit the pre-filled default layout from
+	 * FS_Config_Init. */
 	uint8_t alOpen = 0;
 
 	if (f_open(&configFile, filename, FA_READ) != FR_OK)
@@ -582,9 +600,9 @@ FS_Config_Result_t FS_Config_Read(const char *filename)
 		}
 
 		/* HUD elements. One AL_Line opens an element; the AL_Units / AL_Dec /
-		 * AL_X / AL_Y / AL_Font keys that follow refine it, in any order, and
-		 * each may be omitted — an unstated coordinate keeps the built-in
-		 * position for that slot. Same shape as the Alarm_* and Sp_* blocks.
+		 * AL_Unit_Show / AL_X / AL_Y / AL_Font keys that follow refine it, in
+		 * any order, and each may be omitted — an unstated coordinate keeps
+		 * the built-in position for that slot. Same shape as Alarm_* / Sp_*.
 		 *
 		 * Values are clamped from the RAW long here, before they touch the
 		 * narrow struct fields: assigning first and clamping later would let
@@ -625,6 +643,16 @@ FS_Config_Result_t FS_Config_Read(const char *filename)
 
 			if (!strcmp(name, "AL_Units")) el->units    = (val == 1) ? 1 : 0;
 			if (!strcmp(name, "AL_Dec"))   el->decimals = CFG_CLAMP(val, 0, 3);
+
+			/* Draw the unit after the value ("148 km/h"). Like AL_Units and
+			 * AL_Dec — and unlike AL_X/AL_Y/AL_Font — it states no position,
+			 * so it does NOT flip al_layout_valid. Consequence, same as for
+			 * its two neighbours: a file that names fields and suffixes but
+			 * never a coordinate is not a layout at all: Mode0_Init keeps the
+			 * built-in one (activelook_mode0.c:432) and this element list —
+			 * suffix flags with it — is dropped. Every writer of this file we
+			 * know of (the app, and the template below) states coordinates. */
+			if (!strcmp(name, "AL_Unit_Show")) el->show_units = (val == 1) ? 1 : 0;
 
 			/* Any of these three means the file is describing positions, so
 			 * the built-in layout steps aside in favour of the file's. */

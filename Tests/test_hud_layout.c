@@ -30,6 +30,12 @@ int main(void)
 	CHECK(l.el[4].field == FS_HUD_FIELD_BARO_ALT);
 	CHECK(l.el[4].x == 250 && l.el[4].y == 73 && l.el[4].decimals == 0);
 
+	/* 1b. Unit suffixes are OFF in the built-in layout, all five elements —
+	 *     the positions above were approved on hardware with bare numbers, so
+	 *     an untouched device must not suddenly grow "km/h" into its neighbour. */
+	for (uint8_t i = 0; i < l.count; i++)
+		CHECK(l.el[i].show_units == 0);
+
 	/* 2. With no offset, an element draws exactly where it says. */
 	CHECK(FS_HudLayout_Place(&l, 1, &x, &y) == 1);
 	CHECK(x == 268 && y == 208);
@@ -80,6 +86,8 @@ int main(void)
 	l.el[0].decimals = 9;
 	l.el[1].decimals = -3;
 	l.el[1].units = 77;
+	l.el[1].show_units = 200;
+	l.el[2].show_units = 1;
 	l.shift_x = 9000;
 	l.shift_y = -9000;
 	l.count = FS_HUD_MAX_ELEMENTS + 3;
@@ -91,27 +99,43 @@ int main(void)
 	CHECK(l.el[0].decimals == 3);
 	CHECK(l.el[1].decimals == 0);
 	CHECK(l.el[1].units == FS_HUD_UNITS_METRIC);
+	/* show_units is a flag: any non-zero becomes 1, and a real 1 survives. */
+	CHECK(l.el[1].show_units == 1);
+	CHECK(l.el[2].show_units == 1);
+	CHECK(l.el[0].show_units == 0);
 	CHECK(l.shift_x == FS_HUD_MAX_SHIFT);
 	CHECK(l.shift_y == -FS_HUD_MAX_SHIFT);
 
 	/* 7. DefaultSlot seeds a config element that names a field but no
 	 *    coordinates: slot N inherits row N's position and font. */
+	/* Seeded with an element that already asks for suffixes, because that is
+	 * exactly the situation in config.c: config.al_layout.el[] is reused from
+	 * one FS_Config_Read to the next, so every branch of DefaultSlot must write
+	 * show_units rather than let a previous file's 1 leak into a new element. */
 	FS_HudElement_t el;
+	memset(&el, 0xFF, sizeof(el));
 	FS_HudLayout_DefaultSlot(0, FS_HUD_FIELD_HEADING, &el);
 	CHECK(el.field == FS_HUD_FIELD_HEADING);
 	CHECK(el.x == 268 && el.y == 208 && el.font == 3);
+	CHECK(el.show_units == 0);
+	el.show_units = 1;
 	FS_HudLayout_DefaultSlot(3, FS_HUD_FIELD_GPS_ALT, &el);
 	CHECK(el.field == FS_HUD_FIELD_GPS_ALT);
 	CHECK(el.x == 250 && el.y == 73 && el.font == 4);
+	CHECK(el.show_units == 0);
 
 	/* The status line keeps its own small-font defaults wherever it lands. */
+	el.show_units = 1;
 	FS_HudLayout_DefaultSlot(2, FS_HUD_FIELD_INFO, &el);
 	CHECK(el.x == 296 && el.y == 232 && el.font == 0);
+	CHECK(el.show_units == 0);
 
 	/* Past the built-in rows there is no default position to inherit. */
+	el.show_units = 1;
 	FS_HudLayout_DefaultSlot(FS_HUD_DEFAULT_SLOTS, FS_HUD_FIELD_DIVE, &el);
 	CHECK(el.field == FS_HUD_FIELD_DIVE);
 	CHECK(el.x == 0 && el.y == 0);
+	CHECK(el.show_units == 0);
 
 	/* 8. Only barometric altitude and the status line survive without a fix. */
 	CHECK(FS_HudLayout_FieldNeedsFix(FS_HUD_FIELD_BARO_ALT) == 0);

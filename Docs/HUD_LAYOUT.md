@@ -47,6 +47,7 @@ AL_Shift_Y:    0   ; + moves it up. Both -120..120.
 AL_Line:       0   ; opens an element; the keys below describe it
 AL_Units:      0   ; 0 = km/h and m, 1 = mph and feet
 AL_Dec:        0   ; decimal places, 0..3
+AL_Unit_Show:  0   ; 0 = "148", 1 = "148 km/h"
 AL_X:        268   ; 0..303
 AL_Y:        208   ; 0..255
 AL_Font:       3   ; 0..7
@@ -58,10 +59,37 @@ built-in layout to the file's; a block that omits a coordinate inherits the
 built-in position for that slot. Out-of-range numbers are clamped, not
 rejected — a hand-edited file cannot push an element off the panel.
 
+`AL_Unit_Show` (since v0.0.17) appends the element's unit — `km/h`, `mph`,
+`m`, `ft`, `deg` — after a single space. It defaults to **0**, and the
+built-in layout above leaves it off: those coordinates were approved on
+hardware with bare numbers, and whether a suffix at 64/75 px still clears the
+neighbouring element has not been checked through the glasses. Glide ratio and
+inverse glide ratio have no unit, so the key does nothing there; the status
+line never gets one either. Like `AL_Units` and
+`AL_Dec`, it states no position, so it does not by itself switch the HUD away
+from the built-in layout — a file that sets it must also state coordinates.
+
 Fields: 0 HSpd, 1 VSpd, 2 GR, 3 1/GR, 4 total speed, 5 direction to
 destination, 6 distance to destination, 7 direction to bearing, 11 dive angle,
 12 GPS altitude above `DZ_Elev`, 13 course, **14 barometric altitude** (zeroed
 at power-on, the only field that works without a GPS fix), **100 status line**.
+
+## Refresh rate
+
+```
+AL_Rate:     250   ; ms between HUD frames, minimum 100
+```
+
+**250 ms (4 Hz) since v0.0.17**, up from 500 ms — the owner asked for it, 2 Hz
+lagged visibly. Honesty about what that number rests on: **333 ms is the
+fastest rate ever field-tested on this hardware**, and 250 has not been flown
+yet. It is inside the range the pacing was built for — the glasses throttle us
+with a CB9 flow-control STOP, honoured between chunks in
+`FS_ActiveLook_Mode0_DrainFrame`, and a frame that hits a full CPU2 TX pool
+resumes on `ACI_GATT_TX_POOL_AVAILABLE` instead of being dropped — but the
+known failure mode of over-driving the glasses is the display processor hanging
+while BLE stays up. If the HUD freezes and only a power-cycle of the glasses
+brings it back, raise `AL_Rate` to 333 or 500 before looking anywhere else.
 
 ## Fonts loaded on ENGO 3 (fontList 0x50, verified on hardware)
 

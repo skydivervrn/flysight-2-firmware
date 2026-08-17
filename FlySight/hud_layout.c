@@ -21,13 +21,16 @@
 #define INFO_FONT  0
 
 /* The four data slots, in the order the HUD has drawn them since v0.0.11.
- * Fonts: 3 = 64 px (the two speeds, side by side), 4 = 75 px (GR and Alt). */
+ * Fonts: 3 = 64 px (the two speeds, side by side), 4 = 75 px (GR and Alt).
+ * Trailing 0 = show_units off. These positions were approved on hardware with
+ * bare numbers only; whether a suffix still fits between HSpd (x=268) and VSpd
+ * (x=134) at 64 px has NOT been measured, so the default does not risk it. */
 static const FS_HudElement_t s_defaultSlots[FS_HUD_DEFAULT_SLOTS] =
 {
-	{ FS_HUD_FIELD_HSPEED,   268, 208, 3, FS_HUD_UNITS_METRIC, 0 },
-	{ FS_HUD_FIELD_VSPEED,   134, 208, 3, FS_HUD_UNITS_METRIC, 0 },
-	{ FS_HUD_FIELD_GLIDE,    250, 147, 4, FS_HUD_UNITS_METRIC, 2 },
-	{ FS_HUD_FIELD_BARO_ALT, 250,  73, 4, FS_HUD_UNITS_METRIC, 0 },
+	{ FS_HUD_FIELD_HSPEED,   268, 208, 3, FS_HUD_UNITS_METRIC, 0, 0 },
+	{ FS_HUD_FIELD_VSPEED,   134, 208, 3, FS_HUD_UNITS_METRIC, 0, 0 },
+	{ FS_HUD_FIELD_GLIDE,    250, 147, 4, FS_HUD_UNITS_METRIC, 2, 0 },
+	{ FS_HUD_FIELD_BARO_ALT, 250,  73, 4, FS_HUD_UNITS_METRIC, 0, 0 },
 };
 
 static int16_t clamp16(int16_t v, int16_t lo, int16_t hi)
@@ -43,12 +46,13 @@ void FS_HudLayout_Default(FS_HudLayout_t *out)
 
 	memset(out, 0, sizeof(*out));
 
-	out->el[0].field    = FS_HUD_FIELD_INFO;
-	out->el[0].x        = INFO_X;
-	out->el[0].y        = INFO_Y;
-	out->el[0].font     = INFO_FONT;
-	out->el[0].units    = FS_HUD_UNITS_METRIC;
-	out->el[0].decimals = 0;
+	out->el[0].field      = FS_HUD_FIELD_INFO;
+	out->el[0].x          = INFO_X;
+	out->el[0].y          = INFO_Y;
+	out->el[0].font       = INFO_FONT;
+	out->el[0].units      = FS_HUD_UNITS_METRIC;
+	out->el[0].decimals   = 0;
+	out->el[0].show_units = 0;
 
 	for (uint8_t i = 0; i < FS_HUD_DEFAULT_SLOTS; ++i)
 	{
@@ -67,13 +71,15 @@ void FS_HudLayout_DefaultSlot(uint8_t slot, uint8_t field, FS_HudElement_t *out)
 	if (field == FS_HUD_FIELD_INFO)
 	{
 		/* The info line keeps its own defaults wherever it appears in the
-		 * list — it is one line of small text, never one of the data rows. */
-		out->field    = field;
-		out->x        = INFO_X;
-		out->y        = INFO_Y;
-		out->font     = INFO_FONT;
-		out->units    = FS_HUD_UNITS_METRIC;
-		out->decimals = 0;
+		 * list — it is one line of small text, never one of the data rows.
+		 * It has no unit suffix to append, so show_units stays off. */
+		out->field      = field;
+		out->x          = INFO_X;
+		out->y          = INFO_Y;
+		out->font       = INFO_FONT;
+		out->units      = FS_HUD_UNITS_METRIC;
+		out->decimals   = 0;
+		out->show_units = 0;
 		return;
 	}
 
@@ -86,12 +92,13 @@ void FS_HudLayout_DefaultSlot(uint8_t slot, uint8_t field, FS_HudElement_t *out)
 	{
 		/* Past the built-in rows there is no sensible default position: the
 		 * config has to say where it wants the element. */
-		out->field    = field;
-		out->x        = 0;
-		out->y        = 0;
-		out->font     = INFO_FONT;
-		out->units    = FS_HUD_UNITS_METRIC;
-		out->decimals = 0;
+		out->field      = field;
+		out->x          = 0;
+		out->y          = 0;
+		out->font       = INFO_FONT;
+		out->units      = FS_HUD_UNITS_METRIC;
+		out->decimals   = 0;
+		out->show_units = 0;
 	}
 }
 
@@ -107,6 +114,9 @@ void FS_HudLayout_ClampElement(FS_HudElement_t *el)
 
 	if (el->decimals < 0) el->decimals = 0;
 	if (el->decimals > 3) el->decimals = 3;
+
+	/* A flag, not a range: anything the file offers other than 1 means off. */
+	if (el->show_units != 0) el->show_units = 1;
 }
 
 void FS_HudLayout_Clamp(FS_HudLayout_t *layout)

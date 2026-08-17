@@ -52,7 +52,7 @@
  * Then the string on the glasses says exactly which build is running — the
  * whole point of this marker (Firmware_Ver in flysight.txt is unreliable). */
 #ifndef HUD_VERSION
-#define HUD_VERSION "0.0.16"
+#define HUD_VERSION "0.0.17"
 #endif
 
 /* Fonts VERIFIED on ENGO 3 (this unit) via Mac BLE bench 2026-07-20 — fontList
@@ -549,7 +549,19 @@ void FS_ActiveLook_Mode0_Update(void)
         UnitConversionInfo_t conv = AL_GetUnitConversion(
                 entry->unitType, (FS_Config_UnitSystem_t)el->units);
         double v = entry->fn(gnss) * conv.multiplier;
-        snprintf(text[i], AL_MODE0_MAX_TEXT, "%.*f", (int)el->decimals, v);
+
+        /* AL_Unit_Show: append the suffix the conversion table already carries
+         * ("km/h", "mph", "m", "ft", "deg"), one space after the value. The
+         * unitless fields (GR, 1/GR) come back with an empty suffix, so the
+         * flag needs no special case for them — testing the suffix keeps a
+         * stray trailing space off the panel. Worst case here is
+         * "-12345.678 km/h" = 15 chars, well inside AL_MODE0_MAX_TEXT (48);
+         * snprintf truncates rather than overruns in any event. */
+        if (el->show_units && conv.suffix[0] != '\0')
+            snprintf(text[i], AL_MODE0_MAX_TEXT, "%.*f %s",
+                     (int)el->decimals, v, conv.suffix);
+        else
+            snprintf(text[i], AL_MODE0_MAX_TEXT, "%.*f", (int)el->decimals, v);
     }
 
     /* --- Change detection: skip the BLE write if nothing changed --- */

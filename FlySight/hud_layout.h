@@ -88,7 +88,18 @@ typedef struct
 	uint8_t font;      /* 0..FS_HUD_MAX_FONT                                */
 	uint8_t units;     /* FS_HUD_UNITS_*                                    */
 	int8_t  decimals;  /* decimal places, 0..3                              */
+	uint8_t show_units;/* 0 = bare value, 1 = value + unit suffix           */
 } FS_HudElement_t;
+
+/* show_units appends the element's unit suffix after a single space, so a speed
+ * reads "148 km/h" instead of "148". DEFAULT 0 everywhere, deliberately: the
+ * layout in Docs/HUD_LAYOUT.md was approved on hardware with bare numbers, and
+ * how much room a suffix takes at 64/75 px is a guess until someone looks at it
+ * through the glasses — an untouched device must keep looking exactly as it does
+ * today. The suffix comes from the renderer's unit table (activelook_mode0.c),
+ * which is empty for the unitless fields (glide ratio, inverse glide ratio) and
+ * never consulted for the status line, so the flag is a silent no-op there
+ * rather than a special case anyone has to remember. */
 
 typedef struct
 {
