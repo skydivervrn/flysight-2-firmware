@@ -154,7 +154,16 @@ void FS_State_Read(void)
 	state.charge_current = 2;
 	strcpy(state.device_name, "FlySight");
 	state.enable_ble = 1;
-	state.reset_ble = 1;
+	/* 0, not 1. This default is what survives when /flysight.txt cannot be
+	 * OPENED — the read below returns early and leaves these values standing —
+	 * and reset_ble = 1 means FS_State_Init calls APP_BLE_Reset(), which is
+	 * aci_gap_clear_security_db(): every bond on the device, gone. A card that
+	 * is briefly busy at boot would therefore make every phone, tablet and Mac
+	 * that ever paired with this FlySight pair again, with nothing said about
+	 * why. Wiping the bonds is a deliberate act and now has to be asked for, by
+	 * writing Reset_BLE: 1 into the file; the file is rewritten with 0 on every
+	 * boot (FS_State_Write), so the request is a one-shot exactly as before. */
+	state.reset_ble = 0;
 	memset(state.session_id, 0, 4 * 3);
 	memset(state.ble_irk, 0, CONFIG_DATA_IR_LEN);
 	memset(state.ble_erk, 0, CONFIG_DATA_ER_LEN);

@@ -944,9 +944,22 @@ class connected:
     async def __aenter__(self):
         device = await find_device(self.args.address, self.args.scan_timeout)
         self.client = BleakClient(device, timeout=30.0)
-        await self.client.connect()
-        fs = FlySight(self.client, window=self.args.window)
-        await fs.start()
+        try:
+            await self.client.connect()
+            fs = FlySight(self.client, window=self.args.window)
+            await fs.start()
+        except BaseException:
+            # A connect that raises still leaves CoreBluetooth trying. macOS
+            # keeps the attempt pending long after our timeout has given up, the
+            # FlySight ends up counting itself linked, and it then stops
+            # advertising to EVERYONE — the phone included, which reads as "the
+            # device has died". `__aexit__` never runs when `__aenter__` raises,
+            # so the cancellation has to happen here.
+            try:
+                await self.client.disconnect()
+            except Exception:
+                pass
+            raise
         return fs
 
     async def __aexit__(self, *exc):
