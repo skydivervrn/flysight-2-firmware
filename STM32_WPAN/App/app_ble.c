@@ -623,11 +623,10 @@ SVCCTL_UserEvtFlowStatus_t SVCCTL_App_Notification(void *p_Pckt)
               memcpy(central_fail_addr, central_id_addr, 6);
             }
 
-            if (central_fail_count >= 2)
+            if (central_fail_count == 2)
             {
               tBleStatus evict_ret = aci_gap_remove_bonded_device(
                   central_fail_type, central_fail_addr);
-              central_fail_count = 0;
 #if FS_BLE_DIAG
               {
                 char evictStr[18];
@@ -647,6 +646,29 @@ SVCCTL_UserEvtFlowStatus_t SVCCTL_App_Notification(void *p_Pckt)
                 memcpy(pending_evict_addr, central_fail_addr, 6);
                 (void) aci_gap_terminate_gap_proc(GAP_GENERAL_DISCOVERY_PROC);
               }
+            }
+            else if (central_fail_count >= 4)
+            {
+              /* Two more dead links after the surgical removal was attempted
+               * and retried: whatever aci_gap_remove_bonded_device did on this
+               * stack, it did not stop the peer getting back in — measured on
+               * hardware, six links in a row came up and died and the Mac was
+               * still being let through.
+               *
+               * aci_gap_clear_security_db is the one call PROVEN to empty this
+               * controller's bond table: it is what Reset_BLE: 1 uses
+               * (state.c:396, APP_BLE_Reset), a path that has worked on this
+               * unit for months. It is a bigger hammer — every bond goes, the
+               * tablet's included — so it is deliberately last, and it costs
+               * one double-press per device to pair again. Nothing healthy can
+               * reach this point: a peer that completes pairing resets the
+               * counter, and an unbonded stranger cannot get past the
+               * whitelist to start one. */
+              tBleStatus wipe_ret = aci_gap_clear_security_db();
+              central_fail_count = 0;
+              pending_evict = 0;
+              FS_BleDiag_Log("BOND_WIPE clear_security_db=0x%02X (ALL BONDS ERASED,"
+                             " every device must pair again)", (unsigned) wipe_ret);
             }
           }
         }
