@@ -6,7 +6,7 @@
 # exactly like a FlySight that is switched off.
 #
 #     Tools/flysight_app.sh            # http://127.0.0.1:8765/
-#     Tools/flysight_app.sh --port 8770 --no-autoconnect
+#     Tools/flysight_app.sh --port 8770 --autoconnect
 #
 # Any arguments are passed straight through to flysight_app.py.
 set -eu

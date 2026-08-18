@@ -79,6 +79,11 @@ FLASH_JOB_TIMEOUT = 900.0  # upload + read-back + install of a ~160 kB image
 HTTP_CALL_TIMEOUT = 10.0  # bridging an HTTP thread into the loop
 HTTP_FILE_TIMEOUT = 45.0  # …except a file read, which answers with the file
 RETRY_PAUSE = 2.0         # after a failed connect, before scanning again
+# How long one press of "Connect & pair" keeps looking before giving up. Long
+# enough to walk to the FlySight, wake it and double-press it; short enough
+# that a button pressed by mistake does not leave the radio scanning an empty
+# room all day. A link that comes up resets it.
+RETRY_GIVE_UP = 240.0
 
 # The word a caller must send with an install request. A dry run and the real
 # thing follow the same code path right up to the last line; this token is the
@@ -146,7 +151,10 @@ def link_hint(state: str, retrying: bool) -> str:
         return ("Linked. The FlySight stops advertising while a central holds "
                 "it, so the tablet will not see it until this app disconnects.")
     if not retrying:
-        return "Not connected and not looking. Press Connect."
+        return ("Idle — no radio in use. Press “Connect & pair” when you are "
+                "standing next to the FlySight; it will then keep trying until "
+                "you double-press the button, and stop by itself if that never "
+                "happens.")
     if state == CONNECTING:
         return "Found it — connecting."
     return ("Scanning. Double-press the FlySight's button to open PAIRING mode "
@@ -463,9 +471,24 @@ class Link:
             self._dropped.set()
 
     async def _retry_loop(self) -> None:
-        """Scan, connect, hold, and start again when the link goes away."""
+        """Scan, connect, hold, and start again when the link goes away.
+
+        Bounded on purpose. Looking is only useful while somebody is standing
+        next to the FlySight ready to double-press it, so a search that has
+        found nothing for RETRY_GIVE_UP seconds gives up and says so, rather
+        than scanning an empty house until the laptop's battery notices. A
+        link that comes up resets the budget: once connected, reconnecting
+        after a drop is worth the same patience all over again.
+        """
         attempt = 0
+        deadline = time.monotonic() + RETRY_GIVE_UP
         while True:
+            if time.monotonic() > deadline:
+                self.state.note("gave up looking — press “Connect & pair” "
+                                "again when you are next to the device")
+                self.state.set_link(IDLE, retrying=False, attempt=attempt)
+                self._retry_task = None
+                return
             attempt += 1
             self.state.set_link(SCANNING, retrying=True, attempt=attempt)
             try:
@@ -490,6 +513,9 @@ class Link:
                 await asyncio.sleep(RETRY_PAUSE)
                 continue
 
+            # Linked: the patience budget starts over, so a drop later gets a
+            # full search of its own rather than the remains of this one.
+            deadline = time.monotonic() + RETRY_GIVE_UP
             self.state.set_link(CONNECTED, retrying=True, attempt=attempt)
             self.state.set_device(name=name or fb.ADV_NAME, rssi=rssi,
                                   address=device.address,
@@ -871,7 +897,7 @@ PAGE = """<!doctype html>
      <span id="busy"></span></div>
 <p class="hint" id="hint"></p>
 
-<button onclick="post('/api/connect')">Connect (keep retrying)</button>
+<button onclick="post('/api/connect')">Connect &amp; pair</button>
 <button onclick="post('/api/stop')">Stop</button>
 <button onclick="post('/api/disconnect')">Disconnect</button>
 
@@ -1094,8 +1120,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--scan-timeout", type=float, default=SCAN_TIMEOUT,
                         metavar="SEC", help="length of one scan pass "
                                             f"(default {SCAN_TIMEOUT:.0f})")
-    parser.add_argument("--no-autoconnect", action="store_true",
-                        help="start idle instead of looking straight away")
+    # Idle by default. Scanning only finds a FlySight that is in the room, and
+    # the owner is usually not in it — an app that scans from launch until
+    # someone comes home is a radio and a battery burned for nothing, and its
+    # log fills with "no FlySight in that scan" until the one real line is
+    # impossible to see. Connecting is a thing you ask for, with the button,
+    # standing next to the device.
+    parser.add_argument("--autoconnect", action="store_true",
+                        help="start looking straight away instead of idle")
     return parser
 
 
@@ -1152,11 +1184,13 @@ def main(argv=None) -> int:
     thread = threading.Thread(target=loop.run_forever, name="ble", daemon=True)
     thread.start()
     state.note("app started")
-    if not args.no_autoconnect:
+    if args.autoconnect:
         try:
             Handler.controller.start_retry()
         except ApiError as e:
             state.note(f"could not start looking: {e}")
+    else:
+        state.note("idle — press Connect & pair when you are next to the FlySight")
 
     print(f"FlySight app on http://{HOST}:{args.port}/  (loopback only, no auth)",
           flush=True)

@@ -235,11 +235,15 @@ uploader. There is no second implementation of the protocol to keep in step.
 ### The page
 
 Link state, and while disconnected the reminder that a double-press opens
-PAIRING mode and the app is already retrying. Mode, battery, ATT MTU, firmware
-version, production batch. The last 50 log lines, a progress bar during
-transfers, and:
+PAIRING mode. Mode, battery, ATT MTU, firmware version, production batch. The
+last 50 log lines, a progress bar during transfers, and:
 
-* **Connect (keep retrying)** — start looking, and keep looking.
+* **Connect & pair** — start looking, and keep looking for four minutes, which
+  is one walk to the device plus a double-press. Then it gives up and says so.
+  **The app starts idle and uses no radio until this is pressed** — scanning is
+  only useful with a person standing next to the FlySight, and an app that
+  scans an empty room all day is a flat battery and a log nobody can read.
+  `--autoconnect` restores the old start-looking-immediately behaviour.
 * **Stop** — stop looking. An existing link is left alone.
 * **Disconnect** — drop the link and stop looking. Do this before going back to
   the tablet: the FlySight stops advertising while any central holds it.

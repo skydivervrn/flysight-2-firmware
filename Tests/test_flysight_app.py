@@ -142,7 +142,12 @@ class TestAppState(unittest.TestCase):
         self.assertIn("already retrying", hint)
 
     def test_a_still_idle_app_says_press_connect(self):
-        self.assertIn("Press Connect", fa.link_hint(fa.IDLE, False))
+        # Idle is the state the app launches in, so this hint is the first
+        # thing anyone reads: it has to name the button and say that nothing
+        # is happening until it is pressed.
+        hint = fa.link_hint(fa.IDLE, False)
+        self.assertIn("Connect & pair", hint)
+        self.assertIn("Idle", hint)
 
     def test_a_connected_app_stops_talking_about_pairing(self):
         self.assertNotIn("Double-press", fa.link_hint(fa.CONNECTED, True))
