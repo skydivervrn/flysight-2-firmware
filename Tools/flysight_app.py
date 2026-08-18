@@ -638,13 +638,19 @@ class Link:
                 return
             attempt += 1
             self._dropped = None  # else a scan error would read the last
-            started = time.monotonic()  # bound before the try; the handler reads it
+            # Bound before the try because the handler reads it, but reset the
+            # moment the scan is done: a scan pass is seconds of its own, and
+            # counting it made an 8 s connect failure look like a 12 s one —
+            # which is the difference between "the link never came up" and "the
+            # setup did not finish", i.e. between two different bugs.
+            started = time.monotonic()
             self.state.set_link(SCANNING, retrying=True, attempt=attempt)
             try:
                 seen = await self._scan_once()
                 if seen is None:
                     continue
                 device, name, rssi = seen
+                started = time.monotonic()
                 self.state.set_link(CONNECTING, retrying=True, attempt=attempt)
                 self._dropped = asyncio.Event()
                 # connect_device cancels a failed *or cancelled* attempt on the
