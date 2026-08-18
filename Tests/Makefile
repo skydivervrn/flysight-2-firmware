@@ -8,7 +8,8 @@ CFLAGS = -Wall -Wextra -std=c99 -g
 # its JSON API — so they need no radio and no bleak, and any python3 will do.
 PYTHON = python3
 
-TESTS = test_time test_activelook test_flight_detect test_engo_bind test_hud_layout
+TESTS = test_time test_activelook test_flight_detect test_engo_bind test_hud_layout \
+        test_ble_diag
 
 all: $(TESTS)
 
@@ -36,12 +37,19 @@ test_engo_bind: test_engo_bind.c ../FlySight/engo_bind.c ../FlySight/engo_bind.h
 test_hud_layout: test_hud_layout.c ../FlySight/hud_layout.c ../FlySight/hud_layout.h
 	$(CC) $(CFLAGS) -I../FlySight -o test_hud_layout test_hud_layout.c ../FlySight/hud_layout.c
 
+# The pure half of the BLE reconnect diagnostic — ring buffer and line
+# formatter, no HAL and no FatFs, so it links straight from the host. The other
+# half (ble_diag_sink.c) is a clock and a f_write and is not testable here.
+test_ble_diag: test_ble_diag.c ../FlySight/ble_diag.c ../FlySight/ble_diag.h
+	$(CC) $(CFLAGS) -I../FlySight -o test_ble_diag test_ble_diag.c ../FlySight/ble_diag.c
+
 run: all
 	@echo "=== test_time ===";          ./test_time
 	@echo "=== test_activelook ===";    ./test_activelook
 	@echo "=== test_flight_detect ==="; ./test_flight_detect
 	@echo "=== test_engo_bind ===";     ./test_engo_bind
 	@echo "=== test_hud_layout ===";   ./test_hud_layout
+	@echo "=== test_ble_diag ===";     ./test_ble_diag
 	@echo "=== test_flysight_ble ==="; $(PYTHON) test_flysight_ble.py
 	@echo "=== test_flysight_app ==="; $(PYTHON) test_flysight_app.py
 

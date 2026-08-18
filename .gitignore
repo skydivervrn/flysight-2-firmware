@@ -34,6 +34,7 @@ Tests/test_time
 Tests/test_flight_detect
 Tests/test_engo_bind
 Tests/test_hud_layout
+Tests/test_ble_diag
 Tests/build_engo_bind/
 Tests/*.dSYM/
 __pycache__/

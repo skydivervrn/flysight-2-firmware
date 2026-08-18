@@ -27,6 +27,7 @@
 #include "active_mode.h"
 #include "app_ble.h"
 #include "app_common.h"
+#include "ble_diag.h"
 #include "button.h"
 #include "config_mode.h"
 #include "custom_app.h"
@@ -324,6 +325,14 @@ static FS_Mode_State_t FS_Mode_State_Sleep(FS_Mode_Event_t event)
 	}
 	else if (event == FS_MODE_EVENT_VBUS_HIGH)
 	{
+		/* Last chance to get the diagnostic onto the card: from here the host
+		 * owns the microSD through FS_RESOURCE_MICROSD, the FatFs acquire inside
+		 * the flush will fail, and nothing more can be written until the cable
+		 * comes out again. This is task context with FatFs free, the same place
+		 * FS_USBMode_Init is about to claim it. */
+		FS_BleDiag_Log("MODE vbus_high -> USB");
+		FS_BleDiag_FlushNow();
+
 		FS_USBMode_Init();
 		next_mode = FS_MODE_STATE_USB;
 	}

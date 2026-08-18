@@ -40,6 +40,7 @@
 
 /* Private includes -----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "ble_diag.h"
 #include "mode.h"
 /* USER CODE END Includes */
 
@@ -568,7 +569,15 @@ void MX_APPE_Process(void)
   /* USER CODE END MX_APPE_Process_1 */
   UTIL_SEQ_Run(UTIL_SEQ_DEFAULT);
   /* USER CODE BEGIN MX_APPE_Process_2 */
-
+  /* The BLE diagnostic's only unconditional flush point, and the safest context
+   * in the firmware: UTIL_SEQ_Run has returned, so no sequencer task is on the
+   * stack and nothing else can be holding FatFs mid-operation. It is a couple of
+   * instructions when the ring is empty, which is nearly always; when it is not,
+   * a record reaches the card within one pass of the main loop even in SLEEP,
+   * rather than waiting for the owner to plug in. The card write does spin the
+   * microSD up in SLEEP and costs some battery — acceptable in a throwaway
+   * diagnostic build, and the reason this is not something to keep. */
+  FS_BleDiag_Flush();
   /* USER CODE END MX_APPE_Process_2 */
 }
 

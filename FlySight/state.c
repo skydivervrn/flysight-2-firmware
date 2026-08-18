@@ -24,7 +24,9 @@
 #include <ctype.h>
 
 #include "main.h"
+#include "activelook_mode0.h"
 #include "app_ble.h"
+#include "ble_diag.h"
 #include "common.h"
 #include "ff.h"
 #include "resource_manager.h"
@@ -147,6 +149,7 @@ void FS_State_Read(void)
 	char    *name;
 	char    *result;
 	int32_t val;
+	FRESULT fr;
 
 	/* Initialize persistent state */
 	state.config_filename[0] = 0;
@@ -169,8 +172,17 @@ void FS_State_Read(void)
 	memset(state.ble_erk, 0, CONFIG_DATA_ER_LEN);
 	state.active_mode = FS_ACTIVE_MODE_DEFAULT;
 
-	if (f_open(&stateFile, "/flysight.txt", FA_READ) != FR_OK)
+	fr = f_open(&stateFile, "/flysight.txt", FA_READ);
+	if (fr != FR_OK)
+	{
+		/* The whole point of record 1: this early return is what leaves the
+		 * defaults standing, and before b0012cb the default was reset_ble = 1 —
+		 * i.e. a card that was merely busy at boot wiped every bond. If this line
+		 * ever appears in the file, the state read did NOT happen. */
+		FS_BleDiag_Log("STATE open=FAIL fr=%u defaults reset_ble=%u enable_ble=%u",
+				(unsigned) fr, (unsigned) state.reset_ble, (unsigned) state.enable_ble);
 		return;
+	}
 
 	while (!f_eof(&stateFile))
 	{
@@ -244,6 +256,14 @@ void FS_State_Read(void)
 	{
 		FS_Common_GetRandomBytes((uint32_t *) state.ble_erk, CONFIG_DATA_ER_LEN / 4);
 	}
+
+	/* The IRK is what lets a bonded peer resolve OUR advertising address, and it
+	 * is re-read from the card on every boot — so log its first bytes. If it ever
+	 * changes between two boots, every phone's bond is stale on the phone's side
+	 * regardless of what our own bond database says. */
+	FS_BleDiag_Log("STATE open=OK reset_ble=%u enable_ble=%u name='%s' irk=%02X%02X%02X%02X",
+			(unsigned) state.reset_ble, (unsigned) state.enable_ble, state.device_name,
+			state.ble_irk[0], state.ble_irk[1], state.ble_irk[2], state.ble_irk[3]);
 }
 
 static void FS_State_Write(void)
@@ -332,6 +352,11 @@ static void FS_State_Write(void)
 
 void FS_State_Init(void)
 {
+	/* First record of a session. HAL_GetTick restarts at 0 on every boot and
+	 * /BLEDIAG.TXT is appended to, so this line is what separates one power-up
+	 * from the next when reading the file. */
+	FS_BleDiag_Log("BOOT fw=%s hud=%s", GIT_TAG, FS_ActiveLook_Mode0_HudVersion());
+
 	/* Initialize microSD */
 	FS_ResourceManager_RequestResource(FS_RESOURCE_FATFS);
 
@@ -358,6 +383,15 @@ void FS_State_Update(void)
 
 	/* De-initialize microSD */
 	FS_ResourceManager_ReleaseResource(FS_RESOURCE_FATFS);
+
+	/* Record 1, second half. Note what the code actually does, which is not what
+	 * the file name suggests: reset_ble is acted on HERE and nowhere else, and
+	 * FS_State_Update is reached only from FS_USBMode_DeInit — i.e. the bond wipe
+	 * happens when USB is UNPLUGGED, never at boot. Setting Reset_BLE: 1 and
+	 * power-cycling therefore does nothing; FS_State_Init reads the flag and
+	 * FS_State_Write immediately writes 0 back over it. */
+	FS_BleDiag_Log("STATE_UPDATE reset_ble=%u ble_reset=%s",
+			(unsigned) state.reset_ble, state.reset_ble ? "YES" : "no");
 
 	if (state.reset_ble)
 	{

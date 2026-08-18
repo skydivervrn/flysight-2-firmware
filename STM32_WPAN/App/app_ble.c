@@ -46,6 +46,7 @@
 #include "state.h"
 #include "activelook_client.h"
 #include "activelook.h"
+#include "ble_diag.h"
 #include "config.h"
 #include "engo_bind.h"
 #include "log.h"
@@ -500,6 +501,21 @@ SVCCTL_UserEvtFlowStatus_t SVCCTL_App_Notification(void *p_Pckt)
       /* USER CODE BEGIN EVT_DISCONN_COMPLETE */
 
       /* USER CODE END EVT_DISCONN_COMPLETE */
+
+      /* Record 4, the second half. Reasons worth knowing by heart: 0x08
+       * supervision timeout (walked out of range / powered off), 0x13 remote
+       * user terminated, 0x16 local host terminated, 0x3D MIC failure and 0x05
+       * authentication failure — the last two are what a broken bond looks like
+       * from the link layer, as against a peer that was simply never let in. */
+      FS_BleDiag_Log("DISC handle=0x%04X reason=0x%02X peer=%s status=0x%02X",
+          (unsigned) p_disconnection_complete_event->Connection_Handle,
+          (unsigned) p_disconnection_complete_event->Reason,
+          (p_disconnection_complete_event->Connection_Handle
+              == BleApplicationContext.connectionHandleEndDevice1) ? "engo" :
+          (p_disconnection_complete_event->Connection_Handle
+              == BleApplicationContext.connectionHandleCentral) ? "phone" : "other",
+          (unsigned) p_disconnection_complete_event->Status);
+
       if (p_disconnection_complete_event->Connection_Handle == BleApplicationContext.connectionHandleEndDevice1)
       {
         APP_DBG_MSG("\r\n\r** DISCONNECTION EVENT OF END DEVICE 1 \n\r");
@@ -566,6 +582,35 @@ SVCCTL_UserEvtFlowStatus_t SVCCTL_App_Notification(void *p_Pckt)
 
           connection_handle = p_enhanced_connection_complete_event->Connection_Handle;
           role = p_enhanced_connection_complete_event->Role;
+
+#if FS_BLE_DIAG
+          /* Record 4, the first half — and the single most informative line in
+           * the file for this bug. role=1 is us as PERIPHERAL, i.e. a phone or
+           * the Mac got past the whitelist filter. peer_type 0x00/0x01 is a plain
+           * public/random identity; 0x02/0x03 mean the controller RESOLVED the
+           * peer's private address against the resolving list, so peer_addr is
+           * the identity behind it and peer_rpa is what was actually on the air.
+           * A phone that only ever gets in after a double-press should show
+           * peer_type 0x01 with a peer_rpa-shaped address here — that is the
+           * signature of "known device, unresolvable identity". */
+          {
+            char idStr[18], rpaStr[18];
+            FS_BleDiag_FormatAddr(idStr, sizeof(idStr),
+                p_enhanced_connection_complete_event->Peer_Address);
+            FS_BleDiag_FormatAddr(rpaStr, sizeof(rpaStr),
+                p_enhanced_connection_complete_event->Peer_Resolvable_Private_Address);
+            FS_BleDiag_Log("CONN st=0x%02X role=%u handle=0x%04X ptype=%u paddr=%s",
+                (unsigned) p_enhanced_connection_complete_event->Status,
+                (unsigned) role, (unsigned) connection_handle,
+                (unsigned) p_enhanced_connection_complete_event->Peer_Address_Type,
+                idStr);
+            FS_BleDiag_Log("CONN handle=0x%04X peer_rpa=%s int=%u to=%u",
+                (unsigned) connection_handle, rpaStr,
+                (unsigned) p_enhanced_connection_complete_event->Conn_Interval,
+                (unsigned) p_enhanced_connection_complete_event->Supervision_Timeout);
+          }
+#endif
+
           if (role == 0x00)
           { /* ROLE CENTRAL */
         	  APP_DBG_MSG("-- CONNECTION SUCCESS WITH END DEVICE 1\n\r");
@@ -945,9 +990,64 @@ SVCCTL_UserEvtFlowStatus_t SVCCTL_App_Notification(void *p_Pckt)
           APP_DBG_MSG("\n");
 
           /* USER CODE BEGIN ACI_GAP_PAIRING_COMPLETE_VSEVT_CODE*/
+          /* Record 3. Status 0x00 success, 0x01 timeout, 0x02 failed; on 0x02
+           * Reason carries the SMP pairing-failed code (0x03 authentication
+           * requirements, 0x05 pairing not supported, 0x08 unspecified...). */
+          FS_BleDiag_Log("PAIR_CPLT handle=0x%04X status=0x%02X reason=0x%02X",
+              (unsigned) p_pairing_complete->Connection_Handle,
+              (unsigned) p_pairing_complete->Status,
+              (unsigned) p_pairing_complete->Reason);
 
+          /* ...and the bond count immediately afterwards. This is a READ-ONLY
+           * ACI query and nothing else: it does not rebuild the whitelist and
+           * does not touch the resolving list, so the BLE path behaves exactly
+           * as it did without this build. It answers the one question the
+           * pairing-complete event does not — whether a "successful" pairing
+           * actually left a bond behind for the next reconnect to match. */
+#if FS_BLE_DIAG
+          {
+            uint8_t nb = 0;
+            Bonded_Device_Entry_t nb_devices[16];
+            tBleStatus nb_ret = aci_gap_get_bonded_devices(&nb, nb_devices);
+            FS_BleDiag_Log("PAIR_BONDS get_bonded=0x%02X n=%u",
+                (unsigned) nb_ret, (unsigned) nb);
+          }
+#endif
           /* USER CODE END ACI_GAP_PAIRING_COMPLETE_VSEVT_CODE*/
           break;
+
+        /* USER CODE BEGIN ACI_GAP_SECURITY_VSEVT_CODES */
+        case ACI_GAP_BOND_LOST_VSEVT_CODE:
+          /* The peer is re-pairing over a bond we still hold — i.e. the phone
+           * threw its key away and we did not. Log only: the stack's default
+           * (no aci_gap_allow_rebond) is left exactly as it was, so this adds no
+           * behaviour, only a witness. */
+          FS_BleDiag_Log("BOND_LOST (peer re-pairing over an existing bond)");
+          break;
+
+        case ACI_GAP_ADDR_NOT_RESOLVED_VSEVT_CODE:
+          /* The other half of the hypothesis, stated by the controller itself:
+           * a peer turned up with a resolvable private address that no identity
+           * in the resolving list could resolve. With privacy enabled and a
+           * whitelist-only filter, this is precisely how a genuinely bonded
+           * phone gets refused.
+           *
+           * READ THE ABSENCE OF THIS LINE WITH CARE. The firmware never calls
+           * aci_gap_set_event_mask, so both this event (mask bit 0x0800) and
+           * BOND_LOST (0x0080) arrive only if the stack's default mask has them
+           * on. ble_gap_aci.h documents that default as 0xFFFF — every GAP event
+           * enabled — and ACI_GAP_PAIRING_COMPLETE, bit 0x0001 of the same mask,
+           * demonstrably does arrive here today without anyone setting it, which
+           * is good evidence the default is indeed all-on. Good evidence, not
+           * proof: it is NOT verified on this unit, and setting the mask
+           * ourselves would be new behaviour on the BLE path, which this build
+           * is not allowed. So a file with no ADDR_NOT_RESOLVED line is weak
+           * evidence that resolution never failed, whereas one WITH the line is
+           * conclusive that it did. */
+          FS_BleDiag_Log("ADDR_NOT_RESOLVED handle=0x%04X",
+              (unsigned) ((aci_gap_addr_not_resolved_event_rp0 *)(p_blecore_evt->data))->Connection_Handle);
+          break;
+        /* USER CODE END ACI_GAP_SECURITY_VSEVT_CODES */
         /* PAIRING */
         case ACI_GATT_INDICATION_VSEVT_CODE:
         {
@@ -1270,6 +1370,19 @@ static void Ble_Hci_Gap_Gatt_Init(void)
     APP_DBG_MSG("  Success: aci_gap_set_authentication_requirement command\n");
   }
 
+  /* Record 2, part one: the compile-time security posture, once per boot. Read
+   * it together with the ADV lines below — privacy ENABLED plus a whitelist
+   * filter is exactly the combination in which a bonded peer that is missing
+   * from the RESOLVING list gets its connection request dropped by the
+   * controller before the application ever hears about it. */
+  FS_BleDiag_Log("CFG privacy=%u id_addr=%u own_addr=%u bonding=%u mitm=%u io=%u sc=%u"
+                 " adv_filter=%u central=%u",
+      (unsigned) CFG_PRIVACY, (unsigned) CFG_IDENTITY_ADDRESS,
+      (unsigned) CFG_BLE_ADDRESS_TYPE, (unsigned) CFG_BONDING_MODE,
+      (unsigned) CFG_MITM_PROTECTION, (unsigned) CFG_IO_CAPABILITY,
+      (unsigned) CFG_SC_SUPPORT, (unsigned) ADV_FILTER, (unsigned) BLE_CFG_CENTRAL);
+  FS_BleDiag_Log("AUTH set_authentication_requirement=0x%02X", (unsigned) ret);
+
   /**
    * Initialize whitelist
    */
@@ -1284,6 +1397,15 @@ static void Ble_Hci_Gap_Gatt_Init(void)
     {
       APP_DBG_MSG("  Success: aci_gap_configure_whitelist command\n");
     }
+
+    /* 0x00 = success; 0x47 (BLE_STATUS_FAILED) is what the controller returns
+     * when the bond database is EMPTY, which is half of what we are here to
+     * decide. */
+    FS_BleDiag_Log("WL_INIT configure_whitelist=0x%02X", (unsigned) ret);
+  }
+  else
+  {
+    FS_BleDiag_Log("WL_INIT skipped (bonding_mode=0)");
   }
   APP_DBG_MSG("==>> End Ble_Hci_Gap_Gatt_Init function\n\r");
 }
@@ -1363,6 +1485,8 @@ static void Adv_Cancel(void)
       APP_DBG_MSG("  \r\n\r");
       APP_DBG_MSG("** STOP ADVERTISING **  \r\n\r");
     }
+
+    FS_BleDiag_Log("ADV path=stop set_non_discoverable=0x%02X", (unsigned) ret);
   }
 
   /* USER CODE BEGIN Adv_Cancel_2 */
@@ -1440,6 +1564,7 @@ static void FS_Adv_Request(APP_BLE_ConnStatus_t NewStatus)
 {
   tBleStatus ret = BLE_STATUS_INVALID_PARAMS;
   uint16_t Min_Inter, Max_Inter;
+  int8_t bonded;
 
   /* ===== GATEKEEPER: Single point of enforcement ===== */
   if (!FS_State_Get()->enable_ble)
@@ -1452,6 +1577,7 @@ static void FS_Adv_Request(APP_BLE_ConnStatus_t NewStatus)
     }
     HW_TS_Stop(Advertising_mgr_timer_Id);
     BleApplicationContext.SmartPhone_Connection_Status = APP_BLE_IDLE;
+    FS_BleDiag_Log("ADV path=none reason=enable_ble=0");
     return;
   }
   /* ===== END GATEKEEPER ===== */
@@ -1500,7 +1626,8 @@ static void FS_Adv_Request(APP_BLE_ConnStatus_t NewStatus)
   /**
    * Prepare white list as described in PM0271 5.3.1
    */
-  ble_count_bonded_devices();
+  bonded = ble_count_bonded_devices();
+  (void) bonded;  /* only read by the FS_BLE_DIAG records below */
 
   if (request_pairing)
   {
@@ -1525,6 +1652,14 @@ static void FS_Adv_Request(APP_BLE_ConnStatus_t NewStatus)
       APP_DBG_MSG("==>> aci_gap_set_limited_discoverable - Success\n");
     }
 
+    /* Record 5, path A: the double-press path. ADV_FILTER is NO_WHITE_LIST_USE,
+     * so this advertising is open to anyone — which is why a double-press always
+     * gets in and is NOT evidence that the bond database is healthy. */
+    FS_BleDiag_Log("ADV path=limited_discoverable filter=%u ret=0x%02X status=%u"
+                   " bonds=%d int=%u-%u",
+        (unsigned) ADV_FILTER, (unsigned) ret, (unsigned) NewStatus, (int) bonded,
+        (unsigned) Min_Inter, (unsigned) Max_Inter);
+
     /* Update advertising data */
     APP_BLE_UpdateAdvertisingData(NewStatus);
   }
@@ -1543,6 +1678,16 @@ static void FS_Adv_Request(APP_BLE_ConnStatus_t NewStatus)
     {
       APP_DBG_MSG("==>> aci_gap_set_undirected_connectable - Success\n");
     }
+
+    /* Record 5, path B: the ordinary path, and the suspect. The filter policy is
+     * hard-coded HCI_ADV_FILTER_WHITELIST_SCAN_CONNECT (0x03) — scan requests AND
+     * connection requests are accepted only from the whitelist. Compare bonds=
+     * here against the WL/BOND/RL lines just above: bonds=0 means the whitelist
+     * is empty and the radio will refuse every peer. */
+    FS_BleDiag_Log("ADV path=undirected_connectable filter=0x%02X ret=0x%02X status=%u"
+                   " bonds=%d int=%u-%u",
+        (unsigned) HCI_ADV_FILTER_WHITELIST_SCAN_CONNECT, (unsigned) ret,
+        (unsigned) NewStatus, (int) bonded, (unsigned) Min_Inter, (unsigned) Max_Inter);
 
     /* Update advertising data */
     APP_BLE_UpdateAdvertisingData(NewStatus);
@@ -1646,6 +1791,10 @@ void APP_BLE_Reset(void)
     APP_DBG_MSG("  Success: aci_gap_clear_security_db command\n");
   }
 
+  /* Record 1, the part that matters: this line IS the bond wipe. If it appears
+   * without the owner having asked for it, that is the bug. */
+  FS_BleDiag_Log("BLE_RESET clear_security_db=0x%02X (ALL BONDS ERASED)", (unsigned) ret);
+
   /* Re-initialize advertising */
   FS_Adv_Request(BleApplicationContext.SmartPhone_Connection_Status);
 }
@@ -1711,16 +1860,21 @@ static int8_t ble_count_bonded_devices(void)
   tBleStatus ret;
   Bonded_Device_Entry_t devices[16];
   Identity_Entry_t rl_entries[16];
+#if FS_BLE_DIAG
+  char addrStr[18];
+#endif
 
   // 1) Rebuild the whitelist from the bonding database (PM0271 5.3.1 step 3)
   ret = aci_gap_configure_whitelist();
   APP_DBG_MSG("\taci_gap_configure_whitelist = 0x%02X\r\n", ret);
+  FS_BleDiag_Log("WL configure_whitelist=0x%02X", (unsigned) ret);
 
   // 2) Fetch bonded identities (PM0271 5.3.1 step 4)
   ret = aci_gap_get_bonded_devices(&total, devices);
   if (ret != BLE_STATUS_SUCCESS)
   {
     APP_DBG_MSG("ACI_GAP_GET_BONDED_DEVICES error %x\r\n", ret);
+    FS_BleDiag_Log("WL get_bonded=0x%02X FAILED", (unsigned) ret);
     return -1;
   }
 
@@ -1728,6 +1882,10 @@ static int8_t ble_count_bonded_devices(void)
   {
     APP_DBG_MSG("No previous bonded devices\r\n");
   }
+
+  /* Record 2's answer in one line: n=0 with the whitelist filter armed means
+   * nothing on earth can connect without a double-press. */
+  FS_BleDiag_Log("WL get_bonded=0x%02X n=%u", (unsigned) ret, (unsigned) total);
 
   for (uint8_t k = 0; k < total; k++)
   {
@@ -1738,6 +1896,16 @@ static int8_t ble_count_bonded_devices(void)
                 devices[k].Address[5], devices[k].Address[4], devices[k].Address[3],
                 devices[k].Address[2], devices[k].Address[1], devices[k].Address[0]);
 
+#if FS_BLE_DIAG
+    /* Address TYPE matters as much as the address: the identity the controller
+     * stored has to be the identity the peer presents behind its resolvable
+     * private address, and a public/random mix-up resolves to nothing. */
+    FS_BleDiag_FormatAddr(addrStr, sizeof(addrStr), devices[k].Address);
+    FS_BleDiag_Log("BOND %u/%u type=%u addr=%s",
+        (unsigned) (k + 1), (unsigned) total,
+        (unsigned) devices[k].Address_Type, addrStr);
+#endif
+
     rl_entries[k].Peer_Identity_Address_Type = devices[k].Address_Type;
     memcpy(rl_entries[k].Peer_Identity_Address, devices[k].Address, 6);
   }
@@ -1747,10 +1915,12 @@ static int8_t ble_count_bonded_devices(void)
   if (ret != BLE_STATUS_SUCCESS)
   {
     APP_DBG_MSG("aci_gap_add_devices_to_resolving_list fail %x\r\n", ret);
+    FS_BleDiag_Log("RL add_devices=0x%02X n=%u FAILED", (unsigned) ret, (unsigned) total);
     return -1;
   }
 
   APP_DBG_MSG("Resolving List populated with %u bonded device(s)\r\n", total);
+  FS_BleDiag_Log("RL add_devices=0x%02X n=%u", (unsigned) ret, (unsigned) total);
   return (int8_t)total;
 }
 
