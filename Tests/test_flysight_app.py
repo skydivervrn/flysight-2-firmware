@@ -17,6 +17,7 @@ import asyncio
 import io
 import json
 import os
+import shutil
 import socket
 import sys
 import tempfile
@@ -125,7 +126,9 @@ class TestGateRendering(unittest.TestCase):
 class TestAppState(unittest.TestCase):
 
     def setUp(self):
-        self.state = fa.AppState(image_dir=tempfile.mkdtemp())
+        tmp = tempfile.mkdtemp()
+        self.state = fa.AppState(image_dir=tmp,
+                                 known_path=os.path.join(tmp, 'known.json'))
 
     def test_a_fresh_app_is_idle_and_not_looking(self):
         snap = self.state.snapshot()
@@ -217,6 +220,7 @@ class FakeController:
         self.image_dir = image_dir
         self.calls = []
         self.error = None
+        self.remembered = None   # what /api/connect {"known": true} resolves to
 
     def _do(self, name, **kwargs):
         self.calls.append((name, kwargs))
@@ -228,8 +232,14 @@ class FakeController:
         self.calls.append(("snapshot", {}))
         return {"link": fa.IDLE, "log": []}
 
-    def start_retry(self):
-        return self._do("start_retry")
+    def known(self):
+        return self.remembered
+
+    def start_retry(self, address=None):
+        return self._do("start_retry", address=address)
+
+    def forget(self):
+        return self._do("forget")
 
     def stop_retry(self):
         return self._do("stop_retry")
@@ -423,7 +433,8 @@ class TestJobs(unittest.IsolatedAsyncioTestCase):
         fb.COMMAND_TIMEOUT, fb.PACKET_TIMEOUT, fb.ACK_TIMEOUT = self._saved
 
     async def link(self, mode=fb.MODE_SLEEP, battery=91, mtu=250, files=None):
-        state = fa.AppState(image_dir=self.tmp.name)
+        state = fa.AppState(image_dir=self.tmp.name,
+                             known_path=os.path.join(self.tmp.name, 'known.json'))
         device = tb.FakeFlySight(files=files if files is not None
                                  else {fb.FLYSIGHT_TXT: tb.SAMPLE_TXT})
         client = tb.FakeClient(device, mode=mode, battery=battery, mtu=mtu)
@@ -468,7 +479,8 @@ class TestJobs(unittest.IsolatedAsyncioTestCase):
         await first
 
     async def test_nothing_can_be_asked_of_a_link_that_is_not_up(self):
-        state = fa.AppState(image_dir=self.tmp.name)
+        state = fa.AppState(image_dir=self.tmp.name,
+                             known_path=os.path.join(self.tmp.name, 'known.json'))
         link = fa.Link(state)
         with self.assertRaises(fa.ApiError) as caught:
             await link.read_file(fb.FLYSIGHT_TXT)
@@ -578,7 +590,8 @@ class TestJobs(unittest.IsolatedAsyncioTestCase):
     # --- the buttons that must never wedge --------------------------------
 
     async def test_stopping_and_disconnecting_an_idle_app_is_harmless(self):
-        state = fa.AppState(image_dir=self.tmp.name)
+        state = fa.AppState(image_dir=self.tmp.name,
+                             known_path=os.path.join(self.tmp.name, 'known.json'))
         link = fa.Link(state)
         self.assertEqual((await link.stop_retry())["connected"], False)
         self.assertTrue((await link.disconnect())["disconnected"])
@@ -698,7 +711,8 @@ class TestRetryLoop(unittest.IsolatedAsyncioTestCase):
             f"link {want!r} (it is {link.state.link!r})", timeout)
 
     async def make(self):
-        state = fa.AppState(image_dir=self.tmp.name)
+        state = fa.AppState(image_dir=self.tmp.name,
+                             known_path=os.path.join(self.tmp.name, 'known.json'))
         link = fa.Link(state, scan_timeout=0.01)
         self.addCleanup(lambda: link._retry_task and link._retry_task.cancel())
         return link, state
@@ -900,6 +914,78 @@ class TestStartup(unittest.TestCase):
             self.assertEqual(fa.main(["--window", "9"]), 2)
         finally:
             sys.stderr = stderr
+
+
+class RememberedDevice(unittest.TestCase):
+    """The device this Mac already paired with, and the reconnect that needs
+    no button press. The whole point is that the first-time flow — double-press
+    plus the macOS dialog — is not the only way in."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.path = os.path.join(self.dir, "known.json")
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def test_nothing_is_remembered_to_begin_with(self):
+        self.assertIsNone(fa.load_known(self.path))
+
+    def test_a_remembered_device_survives_a_restart(self):
+        state = fa.AppState(image_dir=self.dir, known_path=self.path)
+        state.remember("AF25-UUID", "FlySight")
+        # A second AppState is exactly what a restart looks like.
+        again = fa.AppState(image_dir=self.dir, known_path=self.path)
+        self.assertEqual(again.snapshot()["known"]["address"], "AF25-UUID")
+        self.assertEqual(again.snapshot()["known"]["name"], "FlySight")
+
+    def test_forgetting_removes_it_everywhere(self):
+        state = fa.AppState(image_dir=self.dir, known_path=self.path)
+        state.remember("AF25-UUID", "FlySight")
+        self.assertTrue(state.forget())
+        self.assertIsNone(state.snapshot()["known"])
+        self.assertIsNone(fa.load_known(self.path))
+
+    def test_rubbish_on_disk_is_the_same_as_nothing(self):
+        with open(self.path, "w", encoding="utf-8") as f:
+            f.write("{not json")
+        self.assertIsNone(fa.load_known(self.path))
+        # And a well-formed file with no address is no use either.
+        with open(self.path, "w", encoding="utf-8") as f:
+            f.write('{"name": "FlySight"}')
+        self.assertIsNone(fa.load_known(self.path))
+
+    def test_connect_known_passes_the_stored_address(self):
+        ctrl = FakeController("/tmp")
+        ctrl.remembered = {"address": "AF25-UUID", "name": "FlySight"}
+        status, obj = call(ctrl, "POST", "/api/connect", body={"known": True})
+        self.assertEqual(status, 200)
+        self.assertEqual(ctrl.calls[-1], ("start_retry", {"address": "AF25-UUID"}))
+
+    def test_connect_known_without_one_says_so_instead_of_scanning(self):
+        ctrl = FakeController("/tmp")
+        status, obj = call(ctrl, "POST", "/api/connect", body={"known": True})
+        self.assertEqual(status, 409)
+        self.assertIn("Connect & pair", obj["error"])
+        self.assertEqual(ctrl.calls, [])
+
+    def test_plain_connect_is_still_the_pairing_flow(self):
+        ctrl = FakeController("/tmp")
+        status, _ = call(ctrl, "POST", "/api/connect")
+        self.assertEqual(status, 200)
+        self.assertEqual(ctrl.calls[-1], ("start_retry", {"address": None}))
+
+    def test_forget_is_its_own_endpoint(self):
+        ctrl = FakeController("/tmp")
+        status, _ = call(ctrl, "POST", "/api/forget")
+        self.assertEqual(status, 200)
+        self.assertEqual(ctrl.calls[-1][0], "forget")
+
+    def test_the_hint_stops_asking_for_a_button_press_on_a_reconnect(self):
+        pairing = fa.link_hint(fa.SCANNING, True, True)
+        known = fa.link_hint(fa.SCANNING, True, False)
+        self.assertIn("double-press", pairing.lower())
+        self.assertNotIn("double-press", known.lower())
 
 
 if __name__ == "__main__":

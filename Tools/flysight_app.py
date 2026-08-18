@@ -100,10 +100,66 @@ RETRY_PAUSE = 2.0         # after a failed connect, before scanning again
 # room all day. A link that comes up resets it.
 RETRY_GIVE_UP = 240.0
 
+# A known device is looked for by its address, but only for a couple of passes.
+# CoreBluetooth hands out a UUID derived from the peer's identity, and while a
+# bond is healthy that UUID is stable — but a FlySight advertises with a
+# rotating private address, and a Mac that cannot resolve it sees a NEW UUID
+# every scan (observed here: eight different ones in one evening). So a stored
+# address is a strong hint, never a requirement: after this many scans without
+# it the search falls back to the advertised name and says so.
+KNOWN_ADDRESS_SCANS = 2
+
+# Where the remembered device lives. Deliberately outside the repo — it is a
+# fact about this Mac, not about the source.
+KNOWN_PATH = os.path.expanduser("~/.flysight_app/known.json")
+
 # The word a caller must send with an install request. A dry run and the real
 # thing follow the same code path right up to the last line; this token is the
 # only difference, and it is never remembered.
 INSTALL_CONFIRM = "INSTALL"
+
+
+# ---------------------------------------------------------------------------
+# The remembered device
+# ---------------------------------------------------------------------------
+
+def load_known(path: str = KNOWN_PATH):
+    """The last device that linked, or None. Never raises.
+
+    A missing, unreadable or malformed file is the same thing as "no device
+    remembered": this is a convenience, and it must never be the reason the app
+    will not start.
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            record = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(record, dict) or not record.get("address"):
+        return None
+    return record
+
+
+def save_known(record: dict, path: str = KNOWN_PATH) -> bool:
+    """Remember `record`. True if it reached the disk."""
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(record, f, indent=1)
+        return True
+    except OSError:
+        return False
+
+
+def forget_known(path: str = KNOWN_PATH) -> bool:
+    """Forget the remembered device. True unless the file is still there."""
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        return False
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -155,24 +211,29 @@ CONNECTING = "connecting"
 CONNECTED = "connected"
 
 
-def link_hint(state: str, retrying: bool) -> str:
+def link_hint(state: str, retrying: bool, pairing: bool = True) -> str:
     """The one line the page shows under the link state.
 
-    While disconnected it says the thing the owner actually needs to know: the
-    app is already retrying, so the button press is his to make whenever he
-    likes.
+    `pairing` distinguishes the two ways in: the first-time flow, which needs a
+    double-press and the macOS dialog, and reconnecting to a device that is
+    already bonded, which needs neither. Telling somebody to press a button he
+    does not need to press is how a working reconnect gets reported as broken.
     """
     if state == CONNECTED:
         return ("Linked. The FlySight stops advertising while a central holds "
                 "it, so the tablet will not see it until this app disconnects.")
     if not retrying:
-        return ("Idle — no radio in use. Press “Connect & pair” when you are "
-                "standing next to the FlySight; it will then keep trying until "
-                "you double-press the button, and stop by itself if that never "
-                "happens.")
+        return ("Idle — no radio in use. Use “Connect” for a FlySight this Mac "
+                "already knows, or “Connect & pair” for the first time with a "
+                "new one.")
     if state == CONNECTING:
+        if not pairing:
+            return "Found it — connecting."
         return ("Found it — connecting. If the macOS pairing dialog appears, "
                 "click Pair; the app waits for it.")
+    if not pairing:
+        return ("Looking for the known FlySight. Wake it if it is asleep — no "
+                "button press is needed for a device that is already paired.")
     return ("Scanning. Double-press the FlySight's button to open PAIRING mode "
             "(the LED pulses green for 30 s) — the app is already retrying, so "
             "press it whenever you like. The first bond also needs the macOS "
@@ -224,11 +285,14 @@ class AppState:
     serialise safely while the loop keeps going.
     """
 
-    def __init__(self, image_dir: str = IMAGE_DIR):
+    def __init__(self, image_dir: str = IMAGE_DIR, known_path: str = KNOWN_PATH):
         self._lock = threading.RLock()
         self.image_dir = image_dir
+        self.known_path = known_path
+        self.known = load_known(known_path)
         self.link = IDLE
         self.retrying = False
+        self.pairing = True
         self.attempt = 0
         self.busy = None
         self.device = {}
@@ -251,15 +315,37 @@ class AppState:
 
     # --- link -------------------------------------------------------------
 
-    def set_link(self, link: str, *, retrying=None, attempt=None) -> None:
+    def set_link(self, link: str, *, retrying=None, attempt=None,
+                 pairing=None) -> None:
         with self._lock:
             self.link = link
             if retrying is not None:
                 self.retrying = retrying
             if attempt is not None:
                 self.attempt = attempt
+            if pairing is not None:
+                self.pairing = pairing
             if link != CONNECTED:
                 self.device = {}
+
+    # --- the remembered device --------------------------------------------
+
+    def remember(self, address: str, name: str) -> None:
+        """Store the device that just linked, so next time needs no pairing."""
+        record = {"address": address, "name": name or fb.ADV_NAME,
+                  "last_linked": time.strftime("%Y-%m-%d %H:%M:%S")}
+        with self._lock:
+            self.known = record
+            path = self.known_path
+        if not save_known(record, path):
+            self.note(f"could not write {path}; this device will not be "
+                      "remembered after a restart")
+
+    def forget(self) -> bool:
+        with self._lock:
+            path = self.known_path
+            self.known = None
+        return forget_known(path)
 
     def set_device(self, **fields) -> None:
         with self._lock:
@@ -294,8 +380,10 @@ class AppState:
             return {
                 "link": self.link,
                 "retrying": self.retrying,
+                "pairing": self.pairing,
                 "attempt": self.attempt,
-                "hint": link_hint(self.link, self.retrying),
+                "hint": link_hint(self.link, self.retrying, self.pairing),
+                "known": dict(self.known) if self.known else None,
                 "busy": self.busy,
                 "device": dict(self.device),
                 "progress": dict(self.progress) if self.progress else None,
@@ -348,7 +436,26 @@ def handle_api(method: str, path: str, query: dict, raw: bytes, ctrl):
 
         if path == "/api/connect":
             _require(method, "POST")
-            return 200, {"ok": True, **ctrl.start_retry()}
+            body = parse_json_body(raw)
+            # Two ways in, one endpoint. Without a body it is the first-time
+            # flow: scan by name, expect a double-press and the macOS dialog.
+            # With "known": true it is a reconnect to the device this Mac has
+            # already paired with — no button, no dialog, and the page says so.
+            address = body.get("address")
+            if body.get("known"):
+                known = ctrl.known()
+                if not known:
+                    raise ApiError(409, "no FlySight is remembered yet — use "
+                                        "Connect & pair once, and the device "
+                                        "that links is remembered from then on")
+                address = known["address"]
+            if address is not None and not isinstance(address, str):
+                raise ApiError(400, "address must be a string")
+            return 200, {"ok": True, **ctrl.start_retry(address)}
+
+        if path == "/api/forget":
+            _require(method, "POST")
+            return 200, {"ok": True, **ctrl.forget()}
 
         if path == "/api/stop":
             _require(method, "POST")
@@ -419,22 +526,45 @@ class Link:
         self._job = None
         self._want_link = False
         self._fast_drops = 0  # consecutive connects that died at encryption
+        # The address this run is pinned to, and how many scans have missed it.
+        self._target = address
+        self._address_scans = 0
         # Created inside the loop, once there is one: an Event built on the
         # main thread binds itself to the wrong loop on older Pythons.
         self._dropped = None
 
     # --- retrying ---------------------------------------------------------
 
-    async def start_retry(self) -> dict:
+    async def start_retry(self, address=None) -> dict:
+        """Start looking. `address` pins the search to one remembered device.
+
+        A pinned search is the reconnect path: the device is already bonded, so
+        it needs no button and no dialog, and the hints say so. Without one this
+        is the first-time flow.
+        """
         self._want_link = True
+        target = address or self.address
+        pairing = address is None
         if self._retry_task is not None and not self._retry_task.done():
             self.state.set_link(self.state.link, retrying=True)
             return {"started": False, "note": "already looking"}
-        self.state.set_link(self.state.link, retrying=True)
+        self._target = target
+        self._address_scans = 0
+        self.state.set_link(self.state.link, retrying=True, pairing=pairing)
         self._retry_task = asyncio.ensure_future(self._retry_loop())
-        self.state.note("looking for a FlySight — press the button whenever "
-                        "you like, this keeps trying")
-        return {"started": True}
+        if target:
+            self.state.note(f"looking for the known FlySight at {target}")
+        else:
+            self.state.note("looking for a FlySight — press the button whenever "
+                            "you like, this keeps trying")
+        return {"started": True, "address": target}
+
+    async def forget(self) -> dict:
+        """Forget the remembered device. The live link is left alone."""
+        removed = self.state.forget()
+        self.state.note("forgot the remembered FlySight"
+                        if removed else "could not delete the remembered device file")
+        return {"forgotten": removed}
 
     async def stop_retry(self) -> dict:
         """Stop looking. An existing link is left alone — that is Disconnect.
@@ -508,6 +638,7 @@ class Link:
                 return
             attempt += 1
             self._dropped = None  # else a scan error would read the last
+            started = time.monotonic()  # bound before the try; the handler reads it
             self.state.set_link(SCANNING, retrying=True, attempt=attempt)
             try:
                 seen = await self._scan_once()
@@ -528,23 +659,34 @@ class Link:
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                self.state.note(f"connect failed: {type(e).__name__}: {e}")
-                # The stale-pairing signature: the link comes up and dies at
-                # encryption within a second, attempt after attempt, and no
-                # pairing dialog ever appears (macOS insists on its stored key
-                # instead of pairing). Firmware 0.0.21+ forgets its side of the
-                # bond after two such deaths; the owner then re-pairs once.
-                if self._dropped is not None and self._dropped.is_set():
+                elapsed = time.monotonic() - started
+                # WHICH bound was hit is the whole diagnosis, and the old line
+                # could not say: a failure at the connect bound means macOS
+                # never reported the link at all, so the pairing dialog was
+                # never even reachable; a failure later means the link came up
+                # and the setup — the part that pops the dialog — did not
+                # finish. Measured on this Mac, every failure lands at 8 s.
+                where = ("the link never came up" if elapsed < CONNECT_TIMEOUT + 2
+                         else "the link came up but the setup never finished")
+                self.state.note(f"connect failed after {elapsed:.0f} s — {where} "
+                                f"({type(e).__name__})")
+                # The stale-pairing signature. It is counted from the timeout
+                # itself, NOT from the disconnect callback: when the connect
+                # bound is what fails, bleak never saw a connection, so that
+                # callback never runs and the old test here never fired once.
+                if elapsed < CONNECT_TIMEOUT + 2:
                     self._fast_drops += 1
-                    if self._fast_drops == 2:
+                    if self._fast_drops == 3:
                         self.state.note(
-                            "⚠ the link keeps coming up and dying at once — "
-                            "that is a stale pairing. With firmware 0.0.21+ the "
-                            "FlySight has now forgotten its half: double-press "
-                            "its button and expect the macOS pairing dialog. "
-                            "If the dialog never comes, forget 'FlySight' in "
-                            "System Settings → Bluetooth on this Mac and try "
-                            "the double-press again.")
+                            "⚠ three connects in a row to a FlySight that is "
+                            "right here never completed. That is what a pairing "
+                            "the two sides disagree about looks like: macOS "
+                            "encrypts with a key it has stored, the FlySight "
+                            "answers with a different one, and the link dies "
+                            "before this app is told about it — which is also "
+                            "why no pairing dialog appears. Set Reset_BLE: 1 in "
+                            "flysight.txt over USB, unplug, then double-press "
+                            "the button and try again.")
                 await asyncio.sleep(RETRY_PAUSE)
                 continue
 
@@ -558,6 +700,10 @@ class Link:
                                   mtu=self.client.mtu_size)
             self.state.note(f"linked to {device.address} "
                             f"(ATT MTU {self.client.mtu_size})")
+            # Remembered only once a link actually came up, never from a scan:
+            # an address that has not been connected to is not a device this
+            # Mac can reconnect to.
+            self.state.remember(device.address, name)
             await self._read_identity()
 
             refresher = asyncio.ensure_future(self._refresh_loop())
@@ -580,7 +726,18 @@ class Link:
         found = await bounded(
             fb.BleakScanner.discover(timeout=self.scan_timeout, return_adv=True),
             self.scan_timeout + 15.0)
-        best = fb.select_device(found, self.address)
+        best = fb.select_device(found, self._target)
+        if best is None and self._target:
+            # The stored address is a hint, not a requirement: CoreBluetooth
+            # mints a new UUID for a private address it cannot resolve, so a
+            # remembered one goes stale exactly when the bond is in trouble —
+            # which is when the owner most needs the app to keep looking.
+            self._address_scans += 1
+            if self._address_scans >= KNOWN_ADDRESS_SCANS:
+                self.state.note(f"the remembered address {self._target} has not "
+                                "appeared; looking by name instead")
+                self._target = None
+                best = fb.select_device(found, None)
         if best is None:
             self.state.note(f"no FlySight in that scan ({len(found)} advertisers "
                             "seen); it is silent while another central holds it")
@@ -879,8 +1036,15 @@ class LinkController:
     def snapshot(self) -> dict:
         return self.state.snapshot()
 
-    def start_retry(self) -> dict:
-        return self._call(self.link.start_retry(), HTTP_CALL_TIMEOUT)
+    def known(self):
+        """The remembered device, read without touching the loop."""
+        return self.state.snapshot().get("known")
+
+    def start_retry(self, address=None) -> dict:
+        return self._call(self.link.start_retry(address), HTTP_CALL_TIMEOUT)
+
+    def forget(self) -> dict:
+        return self._call(self.link.forget(), HTTP_CALL_TIMEOUT)
 
     def stop_retry(self) -> dict:
         return self._call(self.link.stop_retry(), HTTP_CALL_TIMEOUT)
@@ -926,6 +1090,9 @@ PAGE = """<!doctype html>
  ul.gates li{padding:.15rem 0} .ok{color:#1a7f37} .warn{color:#c78100} .stop{color:#a11}
  .msg{margin:.4rem 0;padding:.5rem;background:#f4f4f4;border-left:3px solid #888}
  small{color:#666}
+ .known{border:1px solid #bbb;border-left:3px solid #1a7f37;padding:.6rem .7rem;
+        margin:.6rem 0;background:#fafafa}
+ .known small{display:block;margin-top:.3rem}
 </style></head><body>
 
 <h1>FlySight over Bluetooth</h1>
@@ -933,9 +1100,20 @@ PAGE = """<!doctype html>
      <span id="busy"></span></div>
 <p class="hint" id="hint"></p>
 
-<button onclick="post('/api/connect')">Connect &amp; pair</button>
-<button onclick="post('/api/stop')">Stop</button>
-<button onclick="post('/api/disconnect')">Disconnect</button>
+<div class="known" id="knownbox" hidden>
+  <b>This Mac knows a FlySight</b>
+  <div id="knowntext"><small>&nbsp;</small></div>
+  <button id="btnknown" onclick="post('/api/connect', {known: true})">Connect</button>
+  <button onclick="forget()">Forget it</button>
+  <small>Connecting to a device that is already paired needs no button press on
+  the FlySight and no macOS dialog.</small>
+</div>
+
+<div>
+  <button onclick="post('/api/connect')">Connect &amp; pair (first time)</button>
+  <button id="btnstop" onclick="post('/api/stop')">Stop looking</button>
+  <button id="btndisc" class="danger" onclick="post('/api/disconnect')">Disconnect</button>
+</div>
 
 <h2>Device</h2>
 <table id="device"></table>
@@ -990,6 +1168,12 @@ async function readFile() {
   } catch (e) { $('file').textContent = String(e); }
 }
 
+function forget(){
+  if (!confirm('Forget this FlySight? The next connection needs Connect & pair '
+             + 'and a double-press again.')) return;
+  post('/api/forget');
+}
+
 function flash(install) {
   const body = {image: $('image').value.trim(), install: install};
   if (install) {
@@ -1010,6 +1194,15 @@ function refresh() {
     $('badge').className = 'badge ' + s.link;
     $('busy').textContent = s.busy ? '· ' + s.busy + ' in progress' : '';
     $('hint').textContent = s.hint;
+
+    // The remembered device, and the buttons that only make sense sometimes.
+    const k = s.known;
+    $('knownbox').hidden = !k;
+    if (k) $('knowntext').innerHTML = '<small>' + k.name + ' · ' + k.address +
+      '<br>last linked ' + k.last_linked + '</small>';
+    $('btnknown').disabled = s.retrying || s.link === 'connected';
+    $('btnstop').disabled = !s.retrying;
+    $('btndisc').disabled = s.link !== 'connected';
 
     const d = s.device || {};
     $('device').innerHTML = row('Mode', d.mode) + row('Battery',
