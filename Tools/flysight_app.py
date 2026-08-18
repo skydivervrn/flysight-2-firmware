@@ -79,7 +79,14 @@ SCAN_TIMEOUT = 4.0        # one scan pass; the retry loop just runs another
 # connect the loop gets four or five whole attempts inside that window instead
 # of one. Once bonded, a real connect takes about a second, so nothing legitimate
 # needs the longer wait.
-CONNECT_TIMEOUT = 8.0     # connect + subscribe + first reads
+CONNECT_TIMEOUT = 8.0     # the link-layer connect alone
+# Subscribing to the CRS characteristics is what triggers encryption, and on a
+# first pairing that pops the macOS dialog — which sits there until a human
+# clicks it. The old single 8 s bound cancelled the whole attempt with the
+# dialog still on screen, so pairing could never complete. A dead link fails
+# these operations in milliseconds, so the long budget is only ever actually
+# spent while the dialog is up.
+SETUP_TIMEOUT = 95.0      # subscribe + first reads, incl. the pairing dialog
 INFO_TIMEOUT = 20.0       # version and device id after a link comes up
 REFRESH_INTERVAL = 5.0    # re-read mode and battery while idle
 FILE_JOB_TIMEOUT = 120.0  # a whole file read
@@ -164,7 +171,8 @@ def link_hint(state: str, retrying: bool) -> str:
                 "you double-press the button, and stop by itself if that never "
                 "happens.")
     if state == CONNECTING:
-        return "Found it — connecting."
+        return ("Found it — connecting. If the macOS pairing dialog appears, "
+                "click Pair; the app waits for it.")
     return ("Scanning. Double-press the FlySight's button to open PAIRING mode "
             "(the LED pulses green for 30 s) — the app is already retrying, so "
             "press it whenever you like. The first bond also needs the macOS "
@@ -410,6 +418,7 @@ class Link:
         self._retry_task = None
         self._job = None
         self._want_link = False
+        self._fast_drops = 0  # consecutive connects that died at encryption
         # Created inside the loop, once there is one: an Event built on the
         # main thread binds itself to the wrong loop on older Pythons.
         self._dropped = None
@@ -498,6 +507,7 @@ class Link:
                 self._retry_task = None
                 return
             attempt += 1
+            self._dropped = None  # else a scan error would read the last
             self.state.set_link(SCANNING, retrying=True, attempt=attempt)
             try:
                 seen = await self._scan_once()
@@ -512,17 +522,35 @@ class Link:
                 # everyone, tablet included. Do not "simplify" the wait_for away.
                 self.client, self.fs = await bounded(
                     fb.connect_device(device, window=self.window,
+                                      timeout=CONNECT_TIMEOUT,
                                       disconnected_callback=self._on_disconnected),
-                    CONNECT_TIMEOUT)
+                    CONNECT_TIMEOUT + SETUP_TIMEOUT)
             except asyncio.CancelledError:
                 raise
             except Exception as e:
                 self.state.note(f"connect failed: {type(e).__name__}: {e}")
+                # The stale-pairing signature: the link comes up and dies at
+                # encryption within a second, attempt after attempt, and no
+                # pairing dialog ever appears (macOS insists on its stored key
+                # instead of pairing). Firmware 0.0.21+ forgets its side of the
+                # bond after two such deaths; the owner then re-pairs once.
+                if self._dropped is not None and self._dropped.is_set():
+                    self._fast_drops += 1
+                    if self._fast_drops == 2:
+                        self.state.note(
+                            "⚠ the link keeps coming up and dying at once — "
+                            "that is a stale pairing. With firmware 0.0.21+ the "
+                            "FlySight has now forgotten its half: double-press "
+                            "its button and expect the macOS pairing dialog. "
+                            "If the dialog never comes, forget 'FlySight' in "
+                            "System Settings → Bluetooth on this Mac and try "
+                            "the double-press again.")
                 await asyncio.sleep(RETRY_PAUSE)
                 continue
 
             # Linked: the patience budget starts over, so a drop later gets a
             # full search of its own rather than the remains of this one.
+            self._fast_drops = 0
             deadline = time.monotonic() + RETRY_GIVE_UP
             self.state.set_link(CONNECTED, retrying=True, attempt=attempt)
             self.state.set_device(name=name or fb.ADV_NAME, rssi=rssi,
