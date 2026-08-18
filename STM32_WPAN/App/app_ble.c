@@ -262,6 +262,41 @@ void (*Next_Adv_Callback)(void) = 0;
 /* Pairing request flag */
 uint8_t request_pairing = 0;
 
+/* Poisoned-bond self-heal (peripheral role).
+ *
+ * Observed on the Mac (bluetoothd log, 2026-08-18): a central that still holds
+ * an LTK from an old pairing connects fine through the whitelist, immediately
+ * starts encryption with that stale key, fails, and tears the link down within
+ * a second — over and over, and it never falls back to fresh pairing while its
+ * side still holds a key. The device cannot fix the central, but it can stop
+ * matching it: after two consecutive links from the same identity that die
+ * without a successful PAIRING_COMPLETE, that identity's bond is removed here.
+ * The peer then drops off the whitelist, its next attempt (via PAIRING mode)
+ * finds no key on our side, gets "key missing" at the link layer, and the
+ * central re-pairs from scratch — which is the recovery path every stack
+ * implements.
+ *
+ * A healthy bonded reconnect re-encrypts within a few hundred ms and raises
+ * PAIRING_COMPLETE status 0 (seen in BLEDIAG.TXT: CONN at 59496, PAIR_CPLT at
+ * 59681), so it resets the counter and is never at risk. An unbonded stranger
+ * browsing during a pairing window trips the counter, but removing a bond that
+ * does not exist is a no-op. */
+static uint8_t central_id_type;         /* identity of the connected central */
+static uint8_t central_id_addr[6];
+static uint8_t central_id_valid = 0;    /* identity above is populated */
+static uint8_t central_pair_ok = 0;     /* PAIR_CPLT status 0 seen on this link */
+static uint32_t central_conn_tick = 0;  /* HAL_GetTick at connection complete */
+static uint8_t central_fail_count = 0;  /* consecutive dead links, same identity */
+static uint8_t central_fail_type;
+static uint8_t central_fail_addr[6];
+
+/* The resolving list could not be updated (0x0C, command disallowed: the
+ * controller refuses RL changes while scanning or advertising is enabled —
+ * BLEDIAG.TXT showed every rebuild failing once the ENGO scan was running).
+ * When that happens the scan is terminated, this flag is raised, and
+ * Scan_Request retries the rebuild before it starts the next scan. */
+static uint8_t resolving_list_dirty = 0;
+
 /* BD Address of device to be connected once discovered */
 tBDAddr P2P_SERVER1_BDADDR;
 /* Address type of device to be connected (0=public, 1=random, etc.) */
@@ -539,6 +574,62 @@ SVCCTL_UserEvtFlowStatus_t SVCCTL_App_Notification(void *p_Pckt)
         BleApplicationContext.SmartPhone_Connection_Status = APP_BLE_IDLE;
         BleApplicationContext.connectionHandleCentral = 0xFFFF;
 
+        /* Poisoned-bond self-heal. A link that ends without a successful
+         * PAIRING_COMPLETE counts against its identity when it looks like a
+         * broken bond: an explicit security failure (0x05 authentication,
+         * 0x06 PIN/key missing, 0x3D MIC), or any death within 3 s of the
+         * connect — a stale-key central connects, fails encryption and drops
+         * in well under a second, while a human browsing and leaving takes
+         * longer. Two in a row from the same identity and that bond is
+         * removed, so the peer's next pairing attempt starts clean. */
+        if (central_id_valid && !central_pair_ok)
+        {
+          uint8_t reason = p_disconnection_complete_event->Reason;
+          uint8_t security_reason = (reason == 0x05) || (reason == 0x06)
+                                 || (reason == 0x3D);
+          uint8_t died_fast = (HAL_GetTick() - central_conn_tick) < 3000;
+
+          if (security_reason || died_fast)
+          {
+            if (central_fail_count > 0
+                && central_fail_type == central_id_type
+                && memcmp(central_fail_addr, central_id_addr, 6) == 0)
+            {
+              central_fail_count++;
+            }
+            else
+            {
+              central_fail_count = 1;
+              central_fail_type = central_id_type;
+              memcpy(central_fail_addr, central_id_addr, 6);
+            }
+
+            if (central_fail_count >= 2)
+            {
+              tBleStatus evict_ret = aci_gap_remove_bonded_device(
+                  central_fail_type, central_fail_addr);
+              central_fail_count = 0;
+#if FS_BLE_DIAG
+              {
+                char evictStr[18];
+                FS_BleDiag_FormatAddr(evictStr, sizeof(evictStr),
+                                      central_fail_addr);
+                FS_BleDiag_Log("BOND_EVICT type=%u addr=%s remove=0x%02X"
+                               " reason=0x%02X",
+                    (unsigned) central_fail_type, evictStr,
+                    (unsigned) evict_ret, (unsigned) reason);
+              }
+#endif
+            }
+          }
+        }
+        else
+        {
+          central_fail_count = 0;
+        }
+        central_id_valid = 0;
+        central_pair_ok = 0;
+
         if (FS_State_Get()->enable_ble)
         {
           /* restart advertising */
@@ -623,6 +714,22 @@ SVCCTL_UserEvtFlowStatus_t SVCCTL_App_Notification(void *p_Pckt)
             APP_DBG_MSG("-- CONNECTION SUCCESS WITH SMART PHONE\n\r");
             BleApplicationContext.SmartPhone_Connection_Status = APP_BLE_CONNECTED;
             BleApplicationContext.connectionHandleCentral = connection_handle;
+
+            /* Remember who this is, for the poisoned-bond self-heal at
+             * disconnect. Types 0x02/0x03 mean the controller already resolved
+             * a private address: Peer_Address then IS the identity, of type
+             * public (0x00) or static-random (0x01) respectively — the same
+             * form the bonding table stores. */
+            central_id_type = p_enhanced_connection_complete_event->Peer_Address_Type;
+            if (central_id_type >= 0x02)
+            {
+              central_id_type -= 0x02;
+            }
+            memcpy(central_id_addr,
+                   p_enhanced_connection_complete_event->Peer_Address, 6);
+            central_id_valid = 1;
+            central_pair_ok = 0;
+            central_conn_tick = HAL_GetTick();
             HandleNotification.Custom_Evt_Opcode = CUSTOM_CONN_HANDLE_EVT;
             HandleNotification.ConnectionHandle = connection_handle;
             Custom_APP_Notification(&HandleNotification);
@@ -1013,16 +1120,33 @@ SVCCTL_UserEvtFlowStatus_t SVCCTL_App_Notification(void *p_Pckt)
                 (unsigned) nb_ret, (unsigned) nb);
           }
 #endif
+          /* A successful pairing OR re-encryption of a bonded reconnect both
+           * land here with status 0 — either way this link's bond is proven
+           * good, so it must not count towards eviction. */
+          if (p_pairing_complete->Status == 0
+              && p_pairing_complete->Connection_Handle
+                  == BleApplicationContext.connectionHandleCentral)
+          {
+            central_pair_ok = 1;
+            central_fail_count = 0;
+          }
           /* USER CODE END ACI_GAP_PAIRING_COMPLETE_VSEVT_CODE*/
           break;
 
         /* USER CODE BEGIN ACI_GAP_SECURITY_VSEVT_CODES */
         case ACI_GAP_BOND_LOST_VSEVT_CODE:
-          /* The peer is re-pairing over a bond we still hold — i.e. the phone
-           * threw its key away and we did not. Log only: the stack's default
-           * (no aci_gap_allow_rebond) is left exactly as it was, so this adds no
-           * behaviour, only a witness. */
-          FS_BleDiag_Log("BOND_LOST (peer re-pairing over an existing bond)");
+          /* The peer is re-pairing over a bond we still hold — i.e. it threw
+           * its key away and we did not. Per ble_gap_aci.h the application MUST
+           * answer with aci_gap_allow_rebond or the pairing procedure times
+           * out; nothing here ever called it, so a peer that lost its bond
+           * could never get back in. Allow it: the double-press pairing window
+           * is still the only way an unbonded central reaches pairing at all,
+           * so this only lets a device the owner already trusted re-pair. */
+          {
+            tBleStatus rebond_ret = aci_gap_allow_rebond(
+                BleApplicationContext.connectionHandleCentral);
+            FS_BleDiag_Log("BOND_LOST allow_rebond=0x%02X", (unsigned) rebond_ret);
+          }
           break;
 
         case ACI_GAP_ADDR_NOT_RESOLVED_VSEVT_CODE:
@@ -1916,6 +2040,34 @@ static int8_t ble_count_bonded_devices(void)
   {
     APP_DBG_MSG("aci_gap_add_devices_to_resolving_list fail %x\r\n", ret);
     FS_BleDiag_Log("RL add_devices=0x%02X n=%u FAILED", (unsigned) ret, (unsigned) total);
+
+    /* 0x0C, command disallowed: the controller refuses resolving-list changes
+     * while scanning is enabled (BT spec; adv is already stopped on this
+     * path). Seen constantly in BLEDIAG.TXT once the ENGO scan was running —
+     * which meant a bond made after boot never reached the RL, so that phone's
+     * private address stopped resolving and its whitelist reconnects were
+     * refused until the next reboot. Terminate the scan and let Scan_Request
+     * redo the rebuild before it starts the next one. */
+    if (ret == HCI_COMMAND_DISALLOWED_ERR_CODE && !resolving_list_dirty)
+    {
+      resolving_list_dirty = 1;
+      ret = aci_gap_terminate_gap_proc(GAP_GENERAL_DISCOVERY_PROC);
+      FS_BleDiag_Log("RL retry: terminate_scan=0x%02X", (unsigned) ret);
+      if (ret != BLE_STATUS_SUCCESS)
+      {
+        /* No scan to stop after all — retry the rebuild on the spot. */
+        resolving_list_dirty = 0;
+        ret = aci_gap_add_devices_to_resolving_list(total, rl_entries, 1);
+        FS_BleDiag_Log("RL add_devices=0x%02X n=%u (retry)",
+                       (unsigned) ret, (unsigned) total);
+        if (ret == BLE_STATUS_SUCCESS)
+        {
+          return (int8_t)total;
+        }
+      }
+      /* else: ACI_GAP_PROC_COMPLETE restarts the scan task, and Scan_Request
+       * finishes the rebuild first. */
+    }
     return -1;
   }
 
@@ -1932,6 +2084,26 @@ static int8_t ble_count_bonded_devices(void)
 static void Scan_Request(void)
 {
   /* USER CODE BEGIN Scan_Request_1 */
+
+  /* A resolving-list rebuild was refused with "command disallowed" because
+   * this scan was running. Now — after the terminated scan's PROC_COMPLETE and
+   * before the next one starts — is the moment it can succeed. When
+   * advertising is up too (it also blocks RL changes), FS_Adv_Request redoes
+   * the whole stop-rebuild-restart cycle; with the scan not yet running, the
+   * rebuild inside it goes through. */
+  if (resolving_list_dirty)
+  {
+    resolving_list_dirty = 0;
+    if ((BleApplicationContext.SmartPhone_Connection_Status == APP_BLE_FAST_ADV)
+        || (BleApplicationContext.SmartPhone_Connection_Status == APP_BLE_LP_ADV))
+    {
+      FS_Adv_Request(BleApplicationContext.SmartPhone_Connection_Status);
+    }
+    else
+    {
+      (void) ble_count_bonded_devices();
+    }
+  }
 
   /* USER CODE END Scan_Request_1 */
   tBleStatus result;
