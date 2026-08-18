@@ -1357,7 +1357,14 @@ static void Ble_Hci_Gap_Gatt_Init(void)
   a_srd_bd_addr[1] = (uint32_t)((uint64_t)CFG_STATIC_RANDOM_ADDRESS >> 32);
   a_srd_bd_addr[1] |= 0xC000; /* The two upper bits shall be set to 1 */
 #else
-  FS_Common_GetRandomBytes(a_srd_bd_addr, 2);
+  /* Was FS_Common_GetRandomBytes(a_srd_bd_addr, 2) — a fresh address on every
+   * power-up, which is exactly what the comment above says it is not. This is
+   * the device's IDENTITY: a peer stores it when it bonds and expects to meet
+   * it again. Drawing a new one each boot made every bond stale after a power
+   * cycle — a pairing would work, and its reconnect after the next restart
+   * would not. It now comes from the state file, generated once and kept
+   * (state.c), so the FlySight is the same device tomorrow as it is today. */
+  memcpy(a_srd_bd_addr, FS_State_Get()->ble_addr, 6);
   a_srd_bd_addr[1] |= 0xC000; /* The two upper bits shall be set to 1 */
 #endif /* CFG_STATIC_RANDOM_ADDRESS */
 #endif

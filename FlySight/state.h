@@ -46,6 +46,11 @@ typedef struct
 	uint8_t  reset_ble;
 	uint8_t  ble_irk[CONFIG_DATA_IR_LEN];
 	uint8_t  ble_erk[CONFIG_DATA_ER_LEN];
+	/* The static random address this device answers to — its identity as far as
+	 * every bonded peer is concerned. Persisted for exactly the reason the IRK
+	 * is: app_ble.c drew it from the RNG on every power-up, so the FlySight
+	 * introduced itself under a new identity after every reboot. */
+	uint8_t  ble_addr[6];
 	FS_State_ActiveMode_t active_mode;
 } FS_State_Data_t;
 

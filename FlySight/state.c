@@ -170,6 +170,7 @@ void FS_State_Read(void)
 	memset(state.session_id, 0, 4 * 3);
 	memset(state.ble_irk, 0, CONFIG_DATA_IR_LEN);
 	memset(state.ble_erk, 0, CONFIG_DATA_ER_LEN);
+	memset(state.ble_addr, 0, sizeof(state.ble_addr));
 	state.active_mode = FS_ACTIVE_MODE_DEFAULT;
 
 	fr = f_open(&stateFile, "/flysight.txt", FA_READ);
@@ -235,6 +236,11 @@ void FS_State_Read(void)
 			FS_State_ReadHex_8(result, state.ble_erk, CONFIG_DATA_ER_LEN);
 		}
 
+		if (!strcmp(name, "BLE_Addr") && (strlen(result) == 2 * sizeof(state.ble_addr)))
+		{
+			FS_State_ReadHex_8(result, state.ble_addr, sizeof(state.ble_addr));
+		}
+
 		#undef HANDLE_VALUE
 	}
 
@@ -255,6 +261,28 @@ void FS_State_Read(void)
 	while (is_all_zeros(state.ble_erk, CONFIG_DATA_ER_LEN))
 	{
 		FS_Common_GetRandomBytes((uint32_t *) state.ble_erk, CONFIG_DATA_ER_LEN / 4);
+	}
+
+	/* Initialize the identity address if needed.
+	 *
+	 * This is the fix for the reconnect bug. app_ble.c drew this address from
+	 * the RNG on every power-up — the comment above that code claims it comes
+	 * from the UDN, but CFG_STATIC_RANDOM_ADDRESS is not defined, so the else
+	 * branch ran and the FlySight introduced itself under a NEW identity after
+	 * every reboot. A central stores identity plus keys when it bonds; after the
+	 * next power cycle the identity it stored no longer existed, which is why a
+	 * pairing worked once and its reconnect did not, and why macOS ended up
+	 * holding several records for one device. Generated once, kept in the state
+	 * file beside the IRK, and stable for the life of the card from then on. */
+	while (is_all_zeros(state.ble_addr, sizeof(state.ble_addr)))
+	{
+		uint32_t words[2];
+		FS_Common_GetRandomBytes(words, 2);
+		memcpy(state.ble_addr, words, sizeof(state.ble_addr));
+		/* A static random address must have both top bits set (Core spec,
+		 * Vol 6 Part B 1.3.2.1); the byte order here is the little-endian one
+		 * the controller is given, so the most significant byte is the last. */
+		state.ble_addr[5] |= 0xC0;
 	}
 
 	/* The IRK is what lets a bonded peer resolve OUR advertising address, and it
@@ -329,6 +357,10 @@ static void FS_State_Write(void)
 
 	f_printf(&stateFile, "BLE_ERK:      ");
 	FS_State_WriteHex_8(&stateFile, state.ble_erk, 16);
+	f_printf(&stateFile, "\n");
+
+	f_printf(&stateFile, "BLE_Addr:     ");
+	FS_State_WriteHex_8(&stateFile, state.ble_addr, sizeof(state.ble_addr));
 	f_printf(&stateFile, "\n\n");
 
 	f_printf(&stateFile, "; Active mode\n\n");
