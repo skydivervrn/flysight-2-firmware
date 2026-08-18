@@ -22,6 +22,11 @@ reachable from a sandboxed process:
 Bonding is a manual, one-time step: `bleak.pair()` raises NotImplementedError
 on CoreBluetooth, so the first connection needs the FlySight in PAIRING mode
 (double-press) and the macOS system dialog. See Docs/FLASH_OVER_BLE.md.
+
+Every command here is one process, which means it misses that 30 s window more
+often than it catches it. `Tools/flysight_app.py` imports this module into a
+process that stays up, holds the link and keeps retrying, and puts a page and a
+JSON API on 127.0.0.1 — same frames, same gates, same uploader.
 """
 from __future__ import annotations
 
@@ -897,10 +902,43 @@ class FlySight:
 
 VERBOSE = False
 
+# Where `log` sends its lines besides stderr. Tools/flysight_app.py points this
+# at its own ring buffer so protocol oddities reach the page instead of a
+# terminal nobody is watching; a plain CLI run leaves it None.
+LOG_SINK = None
+
 
 def log(message: str) -> None:
+    if LOG_SINK is not None:
+        try:
+            LOG_SINK(message)
+        except Exception:  # a broken sink must never break a transfer
+            pass
     if VERBOSE:
         print(f"  [ble] {message}", file=sys.stderr)
+
+
+def select_device(found, address=None, name: str = ADV_NAME):
+    """Pick the strongest match out of one scan, or None if there is none.
+
+    `found` is what `BleakScanner.discover(return_adv=True)` hands back:
+    `{address: (BLEDevice, AdvertisementData)}`. An explicit address wins
+    whatever the device calls itself — a FlySight renamed in its config still
+    answers to its CoreBluetooth UUID — and without one only the exact
+    advertised name counts. Pure, so the choice is testable without a radio.
+    """
+    best = None
+    for device, adv in found.values():
+        advertised = adv.local_name or device.name or ""
+        if address:
+            if device.address.lower() != address.lower():
+                continue
+        elif advertised != name:
+            continue
+        rssi = -127 if adv.rssi is None else adv.rssi
+        if best is None or rssi > best[2]:
+            best = (device, advertised, rssi)
+    return best
 
 
 async def find_device(address=None, timeout: float = 10.0):
@@ -915,15 +953,7 @@ async def find_device(address=None, timeout: float = 10.0):
             "bleak is not installed. Run this with ~/.venvs/ble/bin/python.")
     print(f"Scanning {timeout:.0f} s for a FlySight…", flush=True)
     found = await BleakScanner.discover(timeout=timeout, return_adv=True)
-    best = None
-    for device, adv in found.values():
-        name = adv.local_name or device.name or ""
-        if address and device.address.lower() != address.lower():
-            continue
-        if not address and name != ADV_NAME:
-            continue
-        if best is None or adv.rssi > best[2]:
-            best = (device, name, adv.rssi)
+    best = select_device(found, address)
     if best is None:
         raise SystemExit(
             f"No FlySight found ({len(found)} advertisers seen). It stops "
@@ -932,6 +962,33 @@ async def find_device(address=None, timeout: float = 10.0):
     device, name, rssi = best
     print(f"Found {name!r} at {device.address} ({rssi} dBm)")
     return device
+
+
+async def connect_device(device, *, window: int = WINDOW_LENGTH,
+                         timeout: float = 30.0, disconnected_callback=None):
+    """Connect to `device`, subscribe, and hand back `(client, FlySight)`.
+
+    **A connect that raises must still be cancelled.** macOS keeps the attempt
+    pending long after our timeout has given up, the FlySight ends up counting
+    itself linked, and it then stops advertising to EVERYONE — the phone
+    included, which reads as "the device has died". The guard catches
+    `BaseException` on purpose: a caller that wraps this in `asyncio.wait_for`
+    cancels it, and a cancellation leaves exactly the same pending attempt
+    behind as a failure does.
+    """
+    client = BleakClient(device, timeout=timeout,
+                         disconnected_callback=disconnected_callback)
+    try:
+        await client.connect()
+        fs = FlySight(client, window=window)
+        await fs.start()
+    except BaseException:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+        raise
+    return client, fs
 
 
 class connected:
@@ -943,23 +1000,9 @@ class connected:
 
     async def __aenter__(self):
         device = await find_device(self.args.address, self.args.scan_timeout)
-        self.client = BleakClient(device, timeout=30.0)
-        try:
-            await self.client.connect()
-            fs = FlySight(self.client, window=self.args.window)
-            await fs.start()
-        except BaseException:
-            # A connect that raises still leaves CoreBluetooth trying. macOS
-            # keeps the attempt pending long after our timeout has given up, the
-            # FlySight ends up counting itself linked, and it then stops
-            # advertising to EVERYONE — the phone included, which reads as "the
-            # device has died". `__aexit__` never runs when `__aenter__` raises,
-            # so the cancellation has to happen here.
-            try:
-                await self.client.disconnect()
-            except Exception:
-                pass
-            raise
+        # `__aexit__` never runs when `__aenter__` raises, so the cancellation
+        # of a failed attempt lives inside connect_device.
+        self.client, fs = await connect_device(device, window=self.args.window)
         return fs
 
     async def __aexit__(self, *exc):

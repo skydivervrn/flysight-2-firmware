@@ -5,10 +5,17 @@ device's identity, writes files to its card, and — if you insist, in words —
 uploads a firmware image and tells the bootloader to install it. No Android
 tablet, no USB cable, no bootloader button dance.
 
+There are two ways to drive it. The **command line** is one operation per
+process: it scans, does the thing, and drops the link. The **app**
+(`Tools/flysight_app.sh`, §4) is the same protocol in one long-lived process
+that holds the link and keeps retrying, with a page and a JSON API on
+`127.0.0.1:8765`. Use the app when the device has to be caught in its PAIRING
+window, which is most of the time.
+
 **It has never been run against a device.** Everything below was assembled from
-the firmware in this repo, the Groundrush app's device layer, and 63 host tests
-that model the firmware's own state machine. The first hardware run is the
-proving run: do it with `--info`, then `--upload`, and only then `--flash`.
+the firmware in this repo, the Groundrush app's device layer, and 150 host
+tests that model the firmware's own state machine. The first hardware run is
+the proving run: do it with `--info`, then `--upload`, and only then `--flash`.
 
 ---
 
@@ -54,6 +61,11 @@ characteristic that demands encryption. So the first time:
 3. Accept the macOS pairing dialog when it appears.
 
 Afterwards the bond persists and plain `--info` works from idle.
+
+Hitting a 30-second window with a command that spends its first ten seconds
+scanning is a game nobody enjoys. **Start the app instead** (§4): it is already
+scanning when you press the button, and it keeps scanning until something
+answers.
 
 **A stale bond has to be cleared on both sides**, or reconnects fail in ways
 that look like a broken radio:
@@ -203,22 +215,147 @@ USB route can never be retired.**
 
 ---
 
-## Tests
-
-Everything the tool decides before it touches a device is pure and tested on
-the Mac, with no radio and no bleak:
+## 4. The app — one process that holds the link
 
 ```bash
-cd Tests && make run                 # C tests + these
-cd Tests && python3 test_flysight_ble.py -v   # just these
+Tools/flysight_app.sh            # bleak venv + browser, http://127.0.0.1:8765/
 ```
 
-63 tests: the CRS framing; the Go-Back-N window (loss, duplicate ACKs, counter
-wrap past 256 frames, the end-of-file rule); the `flysight.txt` parse; the
-batch table, re-derived from `Deploy/Public_Keys/pub_key_b*.bin` rather than
-trusted; every flash gate; and each subcommand driven end to end against a
-Python model of `FS_CRS_State_Idle/_Read/_Write`, including the assertion that
-a dry run never sends the install opcode.
+Everything above assumes you can get a command running inside a window the
+device only opens for thirty seconds. The app removes that problem by never
+stopping: one asyncio loop owns the connection for the life of the process, it
+scans, connects, and when the link drops it goes back to scanning by itself.
+Press the FlySight's button whenever you like — the app is already there. Once
+it is connected it *keeps* the link, so reading a file or flashing an image
+costs nothing but the transfer.
+
+It imports `flysight_ble.py` as a module: same frames, same gates, same
+uploader. There is no second implementation of the protocol to keep in step.
+
+### The page
+
+Link state, and while disconnected the reminder that a double-press opens
+PAIRING mode and the app is already retrying. Mode, battery, ATT MTU, firmware
+version, production batch. The last 50 log lines, a progress bar during
+transfers, and:
+
+* **Connect (keep retrying)** — start looking, and keep looking.
+* **Stop** — stop looking. An existing link is left alone.
+* **Disconnect** — drop the link and stop looking. Do this before going back to
+  the tablet: the FlySight stops advertising while any central holds it.
+* **Read /flysight.txt** — the whole file, which is where `Reset_BLE`,
+  `BLE_IRK`, `Pubkey_X` and the full `Firmware_Ver` live.
+* **Verify image (dry run)** and **Install firmware**, behind a checkbox that
+  is off by default and turns itself off again after every use.
+
+Mode and battery are re-read every five seconds while nothing else is going on,
+because the flash gates turn on both and `0 %` only becomes a real number after
+the device has been in ACTIVE.
+
+### The API
+
+The API is a first-class feature, not a debug hatch — it is how an agent drives
+this. Every endpoint answers JSON, never an HTML error page, and every long
+operation returns immediately with the work reported through `/api/state`, so
+nothing has to hold a socket open for a two-minute upload.
+
+```bash
+# state: link, device, gates, progress, log, and the .sfb it would offer
+curl -s 127.0.0.1:8765/api/state
+
+# start looking, and keep looking (this is the one to call before the button)
+curl -s -X POST 127.0.0.1:8765/api/connect
+
+# stop looking; an existing link stays up
+curl -s -X POST 127.0.0.1:8765/api/stop
+
+# drop the link and stop looking
+curl -s -X POST 127.0.0.1:8765/api/disconnect
+
+# read a file off the card (SLEEP only) — answers with the file if it is quick
+curl -s '127.0.0.1:8765/api/file?path=/flysight.txt'
+
+# dry run: gates, upload, read-back, sha256 — and no 0x04
+curl -s -X POST 127.0.0.1:8765/api/flash -H 'Content-Type: application/json' \
+     -d '{"image": "Deploy/Firmware_To_Deploy/B2_UserApp.sfb"}'
+
+# the real thing; without "confirm" this is a dry run whatever "install" says
+curl -s -X POST 127.0.0.1:8765/api/flash -H 'Content-Type: application/json' \
+     -d '{"image": "…/B2_UserApp.sfb", "install": true, "confirm": "INSTALL"}'
+
+# then watch it, once a second, until flash.stage stops being a verb
+curl -s 127.0.0.1:8765/api/state | python3 -c \
+  'import json,sys; s=json.load(sys.stdin); print(s["flash"], s["progress"])'
+```
+
+`/api/flash` with no `image` takes the newest `.sfb` under
+`Deploy/Firmware_To_Deploy/`. `flash.stage` runs
+`idle → running → uploading → verifying →` one of `verified` (the dry run
+finished and 0x04 was never sent), `installed`, `refused` (a gate said stop, or
+the device did) or `failed`. The gates are in `state.gates`, each with a
+`status` of `ok`, `warn` or `stop`, and they are computed and reported
+**before** a byte of firmware is sent.
+
+Refusals are HTTP statuses with a sentence attached: `400` for a request that
+cannot be honoured (a `.bin` instead of an `.sfb`, an install without its
+confirmation), `409` for "not connected" or "busy", `502` for a device that
+said no, `504` for something that took longer than its timeout.
+
+### Loopback only, and no authentication
+
+The server binds `127.0.0.1` and asks nobody for a password. That is
+deliberate: nothing off this Mac can reach it, and anything running on this Mac
+as this user could drive CoreBluetooth directly anyway. Do not move it to
+`0.0.0.0`; there is no auth to protect it there. Starting a second instance on
+the same port is refused with a sentence rather than a stack trace.
+
+### The one bug worth naming
+
+A connect attempt that fails must still be cancelled. macOS keeps a failed
+attempt pending long after our timeout has given up; the FlySight then counts
+itself linked and **stops advertising to everyone** — the tablet included,
+which reads exactly like a dead device. `connect_device` in `flysight_ble.py`
+cancels on `BaseException`, so a cancelled attempt is cleaned up as thoroughly
+as a failed one, and the retry loop leans on that every few seconds.
+
+For the same reason the app does not use `asyncio.wait_for` around anything
+that talks to the device. `wait_for` runs its argument in a task of its own and
+only *requests* that task's cancellation when the caller is cancelled — it does
+not wait for it. Measured here: a flash cancelled by `disconnect()` went on to
+upload, verify and install its image afterwards. `bounded()` in
+`flysight_app.py` is `wait_for` that waits the inner task out, and the test
+named `test_disconnect_really_stops_a_running_flash` is what keeps it that way.
+
+---
+
+## Tests
+
+Everything both tools decide before they touch a device is pure and tested on
+the Mac, with no radio, no bleak and no browser:
+
+```bash
+cd Tests && make run                          # C tests + these
+cd Tests && python3 test_flysight_ble.py -v   # the protocol
+cd Tests && python3 test_flysight_app.py -v   # the app
+```
+
+**77 tests for the tool**: the CRS framing; the Go-Back-N window (loss,
+duplicate ACKs, counter wrap past 256 frames, the end-of-file rule); the
+`flysight.txt` parse; the batch table, re-derived from
+`Deploy/Public_Keys/pub_key_b*.bin` rather than trusted; every flash gate;
+device selection out of a scan; the always-cancel-a-failed-connect rule; and
+each subcommand driven end to end against a Python model of
+`FS_CRS_State_Idle/_Read/_Write`, including the assertion that a dry run never
+sends the install opcode.
+
+**73 tests for the app**: which `.sfb` it offers, how a gate renders, the state
+machine and its 50-line log, the JSON shape of every endpoint (including that a
+missing endpoint and a wrong method answer JSON), the install confirmation and
+that it is never remembered, the HTTP layer over a real socket, the refusal to
+start twice on one port, the retry loop itself — scan, connect, hold, reconnect
+after a drop, Stop keeping a live link, Disconnect not reconnecting behind your
+back — and the flash and file jobs run end to end against the same device
+model: dry run, install, every refusal, and cancellation.
 
 ---
 

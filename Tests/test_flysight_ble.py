@@ -8,6 +8,7 @@ installed), the `/flysight.txt` parse, the batch table and the flash gates.
 
     cd Tests && python3 test_flysight_ble.py     # or: make run
 """
+import asyncio
 import hashlib
 import os
 import sys
@@ -708,6 +709,171 @@ class TestClientLoops(unittest.IsolatedAsyncioTestCase):
         fields = fb.parse_flysight_txt(await fs.read_file(fb.FLYSIGHT_TXT))
         self.assertEqual(fb.batch_for_pubkey_x(fields["pubkey_x"]), "B2")
         self.assertEqual(fields["firmware_ver"], "v0.0.19-n.caf1a19")
+
+
+# ---------------------------------------------------------------------------
+# Finding a device, and connecting to one
+# ---------------------------------------------------------------------------
+
+class FakeAdv:
+    def __init__(self, local_name=None, rssi=-60):
+        self.local_name = local_name
+        self.rssi = rssi
+
+
+class FakeBleDevice:
+    def __init__(self, address, name=None):
+        self.address = address
+        self.name = name
+
+
+def scan_result(*entries):
+    """`{address: (device, adv)}`, the shape BleakScanner.discover returns."""
+    return {d.address: (d, a) for d, a in entries}
+
+
+class TestSelectDevice(unittest.TestCase):
+
+    def test_only_the_exact_advertised_name_counts(self):
+        found = scan_result(
+            (FakeBleDevice("AAAA"), FakeAdv("FlySight", -50)),
+            (FakeBleDevice("BBBB"), FakeAdv("FlySight Viewer", -40)),
+            (FakeBleDevice("CCCC"), FakeAdv("ENGO 3 050714", -30)))
+        device, name, rssi = fb.select_device(found)
+        self.assertEqual(device.address, "AAAA")
+        self.assertEqual(name, "FlySight")
+
+    def test_the_strongest_of_several_wins(self):
+        found = scan_result(
+            (FakeBleDevice("AAAA"), FakeAdv("FlySight", -80)),
+            (FakeBleDevice("BBBB"), FakeAdv("FlySight", -42)),
+            (FakeBleDevice("CCCC"), FakeAdv("FlySight", -70)))
+        self.assertEqual(fb.select_device(found)[0].address, "BBBB")
+
+    def test_an_address_beats_the_name_a_device_renamed_itself_to(self):
+        # Device_Name is a config field; a renamed FlySight still answers to
+        # its CoreBluetooth UUID, and pinning to one is the point of --address.
+        found = scan_result((FakeBleDevice("AAAA"), FakeAdv("Bob's logger", -60)))
+        self.assertEqual(fb.select_device(found, address="aaaa")[0].address, "AAAA")
+
+    def test_an_address_that_is_not_there_finds_nothing(self):
+        found = scan_result((FakeBleDevice("AAAA"), FakeAdv("FlySight", -60)))
+        self.assertIsNone(fb.select_device(found, address="ZZZZ"))
+
+    def test_an_empty_scan_finds_nothing(self):
+        self.assertIsNone(fb.select_device({}))
+
+    def test_the_name_falls_back_to_the_devices_own(self):
+        # CoreBluetooth caches a name and sometimes gives no local_name in the
+        # advertisement at all.
+        found = scan_result((FakeBleDevice("AAAA", "FlySight"), FakeAdv(None, -60)))
+        self.assertEqual(fb.select_device(found)[1], "FlySight")
+
+    def test_a_missing_rssi_does_not_crash_the_comparison(self):
+        found = scan_result(
+            (FakeBleDevice("AAAA"), FakeAdv("FlySight", None)),
+            (FakeBleDevice("BBBB"), FakeAdv("FlySight", -90)))
+        self.assertEqual(fb.select_device(found)[0].address, "BBBB")
+
+
+class TestConnectDevice(unittest.IsolatedAsyncioTestCase):
+    """The one rule: a connect that does not succeed is always cancelled.
+
+    macOS keeps a failed attempt pending long after our timeout has given up;
+    the FlySight then counts itself linked and stops advertising to everyone,
+    the owner's tablet included. It reads exactly like a dead device.
+    """
+
+    def install(self, *, fail_connect=False, fail_start=False, slow=False):
+        made = []
+
+        class Client(FakeClient):
+            def __init__(self, device, timeout=None, disconnected_callback=None):
+                super().__init__(FakeFlySight())
+                self.disconnect_calls = 0
+                self.callback = disconnected_callback
+                made.append(self)
+
+            async def connect(self):
+                if slow:
+                    await asyncio.sleep(30)
+                if fail_connect:
+                    raise RuntimeError("peripheral is not connectable")
+
+            async def start_notify(self, uuid, callback):
+                if fail_start:
+                    raise RuntimeError("characteristic not found")
+                await super().start_notify(uuid, callback)
+
+            async def disconnect(self):
+                self.disconnect_calls += 1
+
+        saved = fb.BleakClient
+        fb.BleakClient = Client
+        self.addCleanup(lambda: setattr(fb, "BleakClient", saved))
+        return made
+
+    async def test_a_good_connect_hands_back_a_subscribed_link(self):
+        made = self.install()
+        client, fs = await fb.connect_device(FakeBleDevice("AAAA"))
+        self.assertIs(client, made[0])
+        self.assertEqual(client.disconnect_calls, 0)
+        self.assertIn(fb.FT_PACKET_OUT, client._notify)
+        self.assertEqual(fs.mode, fb.MODE_SLEEP)
+
+    async def test_a_failed_connect_is_cancelled(self):
+        made = self.install(fail_connect=True)
+        with self.assertRaises(RuntimeError):
+            await fb.connect_device(FakeBleDevice("AAAA"))
+        self.assertEqual(made[0].disconnect_calls, 1)
+
+    async def test_a_failure_while_subscribing_is_cancelled_too(self):
+        # The link is up by then, and leaving it up would hold the FlySight
+        # silent just as surely as a half-open attempt.
+        made = self.install(fail_start=True)
+        with self.assertRaises(RuntimeError):
+            await fb.connect_device(FakeBleDevice("AAAA"))
+        self.assertEqual(made[0].disconnect_calls, 1)
+
+    async def test_a_cancelled_connect_is_cancelled_on_the_device_too(self):
+        # A caller giving up (a timeout, or the app being told to stop) leaves
+        # exactly the same pending attempt behind as a failure does — which is
+        # why the guard catches BaseException and not Exception.
+        made = self.install(slow=True)
+        task = asyncio.ensure_future(fb.connect_device(FakeBleDevice("AAAA")))
+        await asyncio.sleep(0)
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        self.assertEqual(made[0].disconnect_calls, 1)
+
+    async def test_the_disconnect_callback_is_handed_to_bleak(self):
+        made = self.install()
+        marker = object()
+        await fb.connect_device(FakeBleDevice("AAAA"), disconnected_callback=marker)
+        self.assertIs(made[0].callback, marker)
+
+
+class TestLogSink(unittest.TestCase):
+
+    def test_lines_reach_an_installed_sink(self):
+        lines = []
+        saved, fb.LOG_SINK = fb.LOG_SINK, lines.append
+        try:
+            fb.log("out-of-order frame 7")
+        finally:
+            fb.LOG_SINK = saved
+        self.assertEqual(lines, ["out-of-order frame 7"])
+
+    def test_a_broken_sink_never_breaks_a_transfer(self):
+        def explode(_message):
+            raise RuntimeError("the page went away")
+
+        saved, fb.LOG_SINK = fb.LOG_SINK, explode
+        try:
+            fb.log("still fine")  # must not raise
+        finally:
+            fb.LOG_SINK = saved
 
 
 # ---------------------------------------------------------------------------

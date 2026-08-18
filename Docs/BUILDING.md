@@ -84,6 +84,11 @@ path, and `--flash` uploads to `/FW/APP.SFB` and — only with `--really-install
 ~/.venvs/ble/bin/python Tools/flysight_ble.py --info   # macOS sandbox OFF
 ```
 
+Or run `Tools/flysight_app.sh`, which is the same protocol in a process that
+stays up: it opens a page on `127.0.0.1:8765` and keeps retrying, so the
+double-press that opens PAIRING mode can happen whenever you get to it instead
+of inside one command's scan. Same page, same JSON API, one button per step.
+
 USB stays the only route for three things: the **first bond** with a new Mac,
 firmware older than `v0.0.12` (no install-over-BLE command), and **recovery**
 from a failed install — the bootloader speaks no Bluetooth.
