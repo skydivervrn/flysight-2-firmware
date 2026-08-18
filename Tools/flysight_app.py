@@ -70,8 +70,16 @@ LOG_LINES = 50
 # Timeouts. Every one of them exists so that no single failure can wedge the
 # loop: a task that cannot finish is cancelled and the reason lands in the
 # state, where the page and the API can both see it.
-SCAN_TIMEOUT = 6.0        # one scan pass; the retry loop just runs another
-CONNECT_TIMEOUT = 45.0    # connect + subscribe + first reads
+SCAN_TIMEOUT = 4.0        # one scan pass; the retry loop just runs another
+# Short on purpose, and the number that decides whether pairing works at all.
+# Outside PAIRING mode the FlySight's accept list ignores an unbonded central
+# and the connect simply never completes, so a long timeout is 30-odd seconds
+# spent inside an attempt that was refused in its first millisecond. PAIRING
+# mode lasts about 30 s after the double-press; with a 4 s scan and an 8 s
+# connect the loop gets four or five whole attempts inside that window instead
+# of one. Once bonded, a real connect takes about a second, so nothing legitimate
+# needs the longer wait.
+CONNECT_TIMEOUT = 8.0     # connect + subscribe + first reads
 INFO_TIMEOUT = 20.0       # version and device id after a link comes up
 REFRESH_INTERVAL = 5.0    # re-read mode and battery while idle
 FILE_JOB_TIMEOUT = 120.0  # a whole file read
