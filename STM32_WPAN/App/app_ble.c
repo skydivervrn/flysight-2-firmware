@@ -297,6 +297,14 @@ static uint8_t central_fail_addr[6];
  * Scan_Request retries the rebuild before it starts the next scan. */
 static uint8_t resolving_list_dirty = 0;
 
+/* A bond removal the controller refused, to be tried once more from
+ * Scan_Request — the one context where the ENGO scan is known to be stopped.
+ * Whether the refusal happens at all is what the BOND_EVICT/DISC_EVAL records
+ * are there to establish; this is the retry, not a claim about the cause. */
+static uint8_t pending_evict = 0;
+static uint8_t pending_evict_type;
+static uint8_t pending_evict_addr[6];
+
 /* BD Address of device to be connected once discovered */
 tBDAddr P2P_SERVER1_BDADDR;
 /* Address type of device to be connected (0=public, 1=random, etc.) */
@@ -582,6 +590,17 @@ SVCCTL_UserEvtFlowStatus_t SVCCTL_App_Notification(void *p_Pckt)
          * in well under a second, while a human browsing and leaving takes
          * longer. Two in a row from the same identity and that bond is
          * removed, so the peer's next pairing attempt starts clean. */
+        /* Why the eviction did or did not fire, on EVERY central disconnect.
+         * The first attempt shipped only a BOND_EVICT line, which says nothing
+         * when the branch is never reached — and on the hardware it was not
+         * reached, or the removal failed, and the file could not tell the two
+         * apart. This line names every input the decision is made from. */
+        FS_BleDiag_Log("DISC_EVAL valid=%u pair_ok=%u reason=0x%02X dt=%u count=%u",
+            (unsigned) central_id_valid, (unsigned) central_pair_ok,
+            (unsigned) p_disconnection_complete_event->Reason,
+            (unsigned) (HAL_GetTick() - central_conn_tick),
+            (unsigned) central_fail_count);
+
         if (central_id_valid && !central_pair_ok)
         {
           uint8_t reason = p_disconnection_complete_event->Reason;
@@ -620,6 +639,14 @@ SVCCTL_UserEvtFlowStatus_t SVCCTL_App_Notification(void *p_Pckt)
                     (unsigned) evict_ret, (unsigned) reason);
               }
 #endif
+              if (evict_ret != BLE_STATUS_SUCCESS)
+              {
+                /* Try again from Scan_Request, with the ENGO scan stopped. */
+                pending_evict = 1;
+                pending_evict_type = central_fail_type;
+                memcpy(pending_evict_addr, central_fail_addr, 6);
+                (void) aci_gap_terminate_gap_proc(GAP_GENERAL_DISCOVERY_PROC);
+              }
             }
           }
         }
@@ -1025,6 +1052,20 @@ SVCCTL_UserEvtFlowStatus_t SVCCTL_App_Notification(void *p_Pckt)
 
               /* USER CODE END EVT_BLUE_GAP_PROCEDURE_COMPLETE_Multi */
 #endif
+            }
+            /* A discovery WE terminated to free the resolving list completes
+             * with a NON-ZERO status, and the branch above only re-arms the
+             * scan on 0x00 — so as written the ENGO scan would stop for good
+             * at the first 0x0C, and the deferred rebuild in Scan_Request
+             * would never run either. Re-arm it here. Gated on the flag, which
+             * exactly one place sets, so an ordinary failed discovery is left
+             * to behave as it always did. */
+            else if (gap_evt_proc_complete->Procedure_Code == GAP_GENERAL_DISCOVERY_PROC
+                     && resolving_list_dirty)
+            {
+              FS_BleDiag_Log("RL retry: scan ended status=0x%02X, rescheduling",
+                  (unsigned) gap_evt_proc_complete->Status);
+              UTIL_SEQ_SetTask(1 << CFG_TASK_START_SCAN_ID, CFG_SCH_PRIO_0);
             }
           }
           break; /* ACI_GAP_PAIRING_COMPLETE_VSEVT_CODE */
@@ -2091,6 +2132,23 @@ static void Scan_Request(void)
    * advertising is up too (it also blocks RL changes), FS_Adv_Request redoes
    * the whole stop-rebuild-restart cycle; with the scan not yet running, the
    * rebuild inside it goes through. */
+  /* A refused bond removal, retried here and once only: this runs before the
+   * scan is started again, so if the controller was refusing because a GAP
+   * discovery was running, it will not be now. Either way the return code is
+   * recorded and the matter is settled rather than retried forever. */
+  if (pending_evict)
+  {
+    tBleStatus evict_retry = aci_gap_remove_bonded_device(pending_evict_type,
+                                                          pending_evict_addr);
+    FS_BleDiag_Log("BOND_EVICT retry remove=0x%02X", (unsigned) evict_retry);
+    pending_evict = 0;
+    if (evict_retry == BLE_STATUS_SUCCESS)
+    {
+      /* The whitelist still holds the peer until it is rebuilt. */
+      resolving_list_dirty = 1;
+    }
+  }
+
   if (resolving_list_dirty)
   {
     resolving_list_dirty = 0;
