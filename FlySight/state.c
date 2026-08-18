@@ -171,6 +171,7 @@ void FS_State_Read(void)
 	memset(state.ble_irk, 0, CONFIG_DATA_IR_LEN);
 	memset(state.ble_erk, 0, CONFIG_DATA_ER_LEN);
 	memset(state.ble_addr, 0, sizeof(state.ble_addr));
+	state.ble_addr_is_new = 0;
 	state.active_mode = FS_ACTIVE_MODE_DEFAULT;
 
 	fr = f_open(&stateFile, "/flysight.txt", FA_READ);
@@ -277,6 +278,7 @@ void FS_State_Read(void)
 	while (is_all_zeros(state.ble_addr, sizeof(state.ble_addr)))
 	{
 		uint32_t words[2];
+		state.ble_addr_is_new = 1;
 		FS_Common_GetRandomBytes(words, 2);
 		memcpy(state.ble_addr, words, sizeof(state.ble_addr));
 		/* A static random address must have both top bits set (Core spec,

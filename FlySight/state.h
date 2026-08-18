@@ -51,6 +51,12 @@ typedef struct
 	 * is: app_ble.c drew it from the RNG on every power-up, so the FlySight
 	 * introduced itself under a new identity after every reboot. */
 	uint8_t  ble_addr[6];
+	/* True when the address above had to be generated, i.e. this is the first
+	 * boot of a card that has never carried one. Not persisted: it describes
+	 * this boot, not the device. The BLE layer uses it to clear the bonding
+	 * table exactly once, because every key in it was agreed with the identity
+	 * the device has just stopped using. */
+	uint8_t  ble_addr_is_new;
 	FS_State_ActiveMode_t active_mode;
 } FS_State_Data_t;
 

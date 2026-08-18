@@ -1577,19 +1577,21 @@ static void Ble_Hci_Gap_Gatt_Init(void)
       (unsigned) CFG_SC_SUPPORT, (unsigned) ADV_FILTER, (unsigned) BLE_CFG_CENTRAL);
   FS_BleDiag_Log("AUTH set_authentication_requirement=0x%02X", (unsigned) ret);
 
-  /* The identity roots changed in this build (app_conf.h), so every key in the
-   * bonding table was derived from roots that no longer exist: the entries name
-   * peers this device can no longer talk to, and keeping them would leave it
-   * demanding encryption from a Mac whose key cannot match — the exact loop
-   * this build exists to break. They go once, at boot.
+  /* Clear the bonding table on the ONE boot where this device takes on its
+   * stored identity for the first time. Every key in that table was agreed with
+   * the identity the device has just stopped using, so each entry describes a
+   * peer that will offer a key this device cannot match — and the peer would be
+   * let through the whitelist to try, which is the loop that cost an evening.
    *
-   * This is a DIAGNOSTIC build and this wipe runs on EVERY power-up: every
-   * device pairs again after every restart, one double-press each. It comes out
-   * with the diagnostics, together with FS_BLE_DIAG. */
+   * Deliberately not every boot. An earlier build did that and it worked, but
+   * it also meant no bond ever survived a restart, which is the very thing
+   * being fixed here: with the address stored, a pairing must now outlive a
+   * power cycle, and a wipe on every boot would hide whether it does. */
+  if (FS_State_Get()->ble_addr_is_new)
   {
     tBleStatus wipe = aci_gap_clear_security_db();
-    FS_BleDiag_Log("BOOT_WIPE clear_security_db=0x%02X (new identity roots)",
-        (unsigned) wipe);
+    FS_BleDiag_Log("BOOT_WIPE clear_security_db=0x%02X (identity stored for the"
+                   " first time)", (unsigned) wipe);
   }
 
   /**
