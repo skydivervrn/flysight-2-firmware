@@ -1570,6 +1570,21 @@ static void Ble_Hci_Gap_Gatt_Init(void)
       (unsigned) CFG_SC_SUPPORT, (unsigned) ADV_FILTER, (unsigned) BLE_CFG_CENTRAL);
   FS_BleDiag_Log("AUTH set_authentication_requirement=0x%02X", (unsigned) ret);
 
+  /* The identity roots changed in this build (app_conf.h), so every key in the
+   * bonding table was derived from roots that no longer exist: the entries name
+   * peers this device can no longer talk to, and keeping them would leave it
+   * demanding encryption from a Mac whose key cannot match — the exact loop
+   * this build exists to break. They go once, at boot.
+   *
+   * This is a DIAGNOSTIC build and this wipe runs on EVERY power-up: every
+   * device pairs again after every restart, one double-press each. It comes out
+   * with the diagnostics, together with FS_BLE_DIAG. */
+  {
+    tBleStatus wipe = aci_gap_clear_security_db();
+    FS_BleDiag_Log("BOOT_WIPE clear_security_db=0x%02X (new identity roots)",
+        (unsigned) wipe);
+  }
+
   /**
    * Initialize whitelist
    */

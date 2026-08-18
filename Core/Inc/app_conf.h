@@ -142,13 +142,32 @@
 
 /**
 *   Identity root key used to derive IRK and DHK(Legacy)
+*
+* CHANGED 2026-08-18, and this is the whole point of the 0.0.24 build. The
+* identity root derives the IRK, and the IRK is what a central resolves a
+* private address against — so it is this device's identity as far as a bonded
+* peer is concerned. The old value was ST's example, byte for byte the same on
+* every FlySight ever built from this source.
+*
+* The owner's Mac holds a pairing record for the old identity in
+* /Library/Bluetooth/com.apple.MobileBluetooth.ledevices.paired.db (root-owned;
+* "Paired = 1" in its own logs). While it holds one it issues LE Start
+* Encryption on every connection and never offers to pair — measured across
+* three firmware builds, including one that connected 72 times in 85 seconds.
+* Deleting that row needs sudo. Changing the identity here reaches the same
+* place from the other side: the FlySight becomes a device that record cannot
+* match, so macOS has to treat it as new and pair.
 */
-#define CFG_BLE_IR     {0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0, 0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0}
+#define CFG_BLE_IR     {0x5B, 0xE1, 0x07, 0x42, 0xC9, 0x36, 0xAD, 0x8F, 0x21, 0x74, 0xF0, 0x59, 0x3C, 0xB6, 0x0E, 0xD2}
 
 /**
 * Encryption root key used to derive LTK(Legacy) and CSRK
+*
+* Changed with the identity root above: leaving the old encryption root would
+* keep deriving keys a stale bond could still half-match. Both roots move
+* together or neither does.
 */
-#define CFG_BLE_ER     {0xFE, 0xDC, 0xBA, 0x09, 0x87, 0x65, 0x43, 0x21, 0xFE, 0xDC, 0xBA, 0x09, 0x87, 0x65, 0x43, 0x21}
+#define CFG_BLE_ER     {0x9C, 0x40, 0xB7, 0x1E, 0x63, 0xD5, 0x2A, 0xF8, 0x07, 0xE3, 0x51, 0x8B, 0x46, 0xCA, 0x39, 0x7D}
 
 /**
  * SMPS supply
