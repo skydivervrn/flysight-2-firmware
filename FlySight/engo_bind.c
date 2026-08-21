@@ -130,22 +130,57 @@ void FS_EngoBind_NotePending(const char *cand6)
 
 void FS_EngoBind_CommitIfPending(void)
 {
-	FIL  f;
-	UINT bw;
+	FIL     f;
+	UINT    bw = 0;
+	FRESULT fr;
 
 	if (s_bound || !s_pending) return;
 
 	/* FA_CREATE_NEW: never clobber an existing file (binding changes only when
 	 * the user deletes /engo3.txt). */
-	if (f_open(&f, ENGO_BIND_PATH, FA_CREATE_NEW | FA_WRITE) == FR_OK)
+	fr = f_open(&f, ENGO_BIND_PATH, FA_CREATE_NEW | FA_WRITE);
+	if (fr != FR_OK)
 	{
-		f_write(&f, s_pendingSerial, FS_ENGO_SERIAL_LEN, &bw);
-		f_write(&f, "\n", 1, &bw);
-		f_close(&f);
+		FS_Log_WriteEventAsync("ENGO bind: engo3.txt open failed (%d), not bound", (int)fr);
+	}
+	else
+	{
+		/* Every result and every byte count is checked. A full card, a write
+		 * error or a short write used to be invisible: s_bound went true, the
+		 * session behaved as if it were pinned to these glasses, and only the
+		 * next boot found out — an engo3.txt that fails to parse reads as
+		 * "unbound", which means connect to whichever glasses answer first. */
+		fr = f_write(&f, s_pendingSerial, FS_ENGO_SERIAL_LEN, &bw);
+		if (fr == FR_OK && bw == FS_ENGO_SERIAL_LEN)
+		{
+			fr = f_write(&f, "\n", 1, &bw);
+			if (fr == FR_OK && bw != 1) fr = FR_DISK_ERR;   /* short write */
+		}
+		else if (fr == FR_OK)
+		{
+			fr = FR_DISK_ERR;                                /* short write */
+		}
 
-		memcpy(s_serial, s_pendingSerial, FS_ENGO_SERIAL_LEN + 1);
-		s_bound = true;
-		FS_Log_WriteEventAsync("ENGO bind: learned serial %s -> wrote engo3.txt", s_serial);
+		if (fr == FR_OK) fr = f_sync(&f);
+
+		/* Close whatever happened above, and let a close error condemn the file
+		 * too: FatFs only flushes the last sector and the directory entry here,
+		 * so a close that fails means the bytes are not on the card. */
+		{
+			FRESULT cr = f_close(&f);
+			if (fr == FR_OK) fr = cr;
+		}
+
+		if (fr == FR_OK)
+		{
+			memcpy(s_serial, s_pendingSerial, FS_ENGO_SERIAL_LEN + 1);
+			s_bound = true;
+			FS_Log_WriteEventAsync("ENGO bind: learned serial %s -> wrote engo3.txt", s_serial);
+		}
+		else
+		{
+			FS_Log_WriteEventAsync("ENGO bind: engo3.txt write failed (%d), not bound", (int)fr);
+		}
 	}
 
 	/* Either we wrote it, or the file already exists / write failed — stop trying

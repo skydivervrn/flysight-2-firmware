@@ -10,7 +10,25 @@ char   g_fakeContent[256];
 int    g_fakeExists;
 size_t g_fakeLen;
 
-void FS_Log_WriteEventAsync(const char *format, ...) { (void)format; }
+static int g_logLines;
+void FS_Log_WriteEventAsync(const char *format, ...) { (void)format; g_logLines++; }
+
+/* ---- Fault injection for the card. All zero = a healthy card. ----
+ * g_writeCalls counts f_write calls since the last reset; the *At knobs name
+ * the 1-based call that misbehaves. This is how a full or dying SD card is
+ * reproduced on the host: FatFs reports the failure in the FRESULT, or writes
+ * fewer bytes than asked and says FR_OK. */
+static int g_writeCalls;
+static int g_failWriteAt;    /* this f_write returns FR_DISK_ERR   */
+static int g_shortWriteAt;   /* this f_write returns FR_OK, bw-1   */
+static int g_failSync;       /* f_sync returns FR_DISK_ERR         */
+static int g_failClose;      /* f_close returns FR_DISK_ERR        */
+
+static void card_healthy(void)
+{
+	g_writeCalls = 0;
+	g_failWriteAt = g_shortWriteAt = g_failSync = g_failClose = 0;
+}
 
 FRESULT f_open(FIL *fp, const char *path, int mode)
 {
@@ -47,6 +65,14 @@ char *f_gets(char *buff, int len, FIL *fp)
 FRESULT f_write(FIL *fp, const void *buff, UINT btw, UINT *bw)
 {
 	if (!fp->writing) return FR_DENIED;
+
+	g_writeCalls++;
+
+	if (g_writeCalls == g_failWriteAt) { *bw = 0; return FR_DISK_ERR; }
+
+	if (g_writeCalls == g_shortWriteAt && btw > 0)
+		btw--;   /* card full: FatFs writes what fits and still says FR_OK */
+
 	memcpy(&g_fakeContent[g_fakeLen], buff, btw);
 	g_fakeLen += btw;
 	g_fakeContent[g_fakeLen] = '\0';
@@ -54,7 +80,8 @@ FRESULT f_write(FIL *fp, const void *buff, UINT btw, UINT *bw)
 	return FR_OK;
 }
 
-FRESULT f_close(FIL *fp) { (void)fp; return FR_OK; }
+FRESULT f_sync(FIL *fp)  { (void)fp; return g_failSync  ? FR_DISK_ERR : FR_OK; }
+FRESULT f_close(FIL *fp) { (void)fp; return g_failClose ? FR_DISK_ERR : FR_OK; }
 
 /* ---- helpers ---- */
 static void set_file(const char *content)
@@ -139,6 +166,88 @@ int main(void)
 	FS_EngoBind_NotePending("BBBBBB");  /* ignored: already bound */
 	FS_EngoBind_CommitIfPending();
 	CHECK(strncmp(g_fakeContent, "AAAAAA", 6) == 0);  /* file unchanged */
+
+	/* ---------------------------------------------------------------------
+	 * 11-15. A card that does not take the write must not leave the session
+	 * thinking it is bound. Before the check, CommitIfPending ignored every
+	 * FRESULT and every byte count: on a full card it set s_bound anyway, the
+	 * flight ran as if pinned to these glasses, and the truth only surfaced at
+	 * the next boot — an engo3.txt that will not parse reads as "unbound",
+	 * i.e. connect to whatever glasses answer first.
+	 * ------------------------------------------------------------------- */
+
+	/* 11. The serial write fails outright. */
+	set_file(NULL);
+	card_healthy();
+	FS_EngoBind_Load();
+	g_failWriteAt = 1;
+	FS_EngoBind_NotePending("123456");
+	FS_EngoBind_CommitIfPending();
+	CHECK(FS_EngoBind_IsBound() == false);
+	CHECK(FS_EngoBind_Serial()[0] == '\0');
+
+	/* 12. The serial write is short — FR_OK, but fewer bytes than asked
+	 *     (the classic "card is full" shape). */
+	set_file(NULL);
+	card_healthy();
+	FS_EngoBind_Load();
+	g_shortWriteAt = 1;
+	FS_EngoBind_NotePending("123456");
+	FS_EngoBind_CommitIfPending();
+	CHECK(FS_EngoBind_IsBound() == false);
+	CHECK(g_fakeLen == FS_ENGO_SERIAL_LEN - 1);   /* the truncation is real */
+
+	/* 13. The serial lands but the trailing newline does not. */
+	set_file(NULL);
+	card_healthy();
+	FS_EngoBind_Load();
+	g_failWriteAt = 2;
+	FS_EngoBind_NotePending("123456");
+	FS_EngoBind_CommitIfPending();
+	CHECK(FS_EngoBind_IsBound() == false);
+
+	/* 14. Both writes report success but the flush fails, so nothing reached
+	 *     the card. */
+	set_file(NULL);
+	card_healthy();
+	FS_EngoBind_Load();
+	g_failSync = 1;
+	FS_EngoBind_NotePending("123456");
+	FS_EngoBind_CommitIfPending();
+	CHECK(FS_EngoBind_IsBound() == false);
+
+	/* 15. Close fails: FatFs writes the last sector and the directory entry
+	 *     there, so this is a real loss of the file too. */
+	set_file(NULL);
+	card_healthy();
+	FS_EngoBind_Load();
+	g_failClose = 1;
+	FS_EngoBind_NotePending("123456");
+	FS_EngoBind_CommitIfPending();
+	CHECK(FS_EngoBind_IsBound() == false);
+
+	/* 16. And the healthy card still binds, with the whole "123456\n" on it —
+	 *     the checks above must not have made success unreachable. */
+	set_file(NULL);
+	card_healthy();
+	FS_EngoBind_Load();
+	FS_EngoBind_NotePending("123456");
+	FS_EngoBind_CommitIfPending();
+	CHECK(FS_EngoBind_IsBound() == true);
+	CHECK(strcmp(FS_EngoBind_Serial(), "123456") == 0);
+	CHECK(g_fakeLen == FS_ENGO_SERIAL_LEN + 1);
+	CHECK(strcmp(g_fakeContent, "123456\n") == 0);
+
+	/* 17. A failed commit says so in the event log — this is the only way the
+	 *     user ever learns the binding did not stick. */
+	set_file(NULL);
+	card_healthy();
+	FS_EngoBind_Load();
+	g_failWriteAt = 1;
+	g_logLines = 0;
+	FS_EngoBind_NotePending("123456");
+	FS_EngoBind_CommitIfPending();
+	CHECK(g_logLines == 1);
 
 	printf("engo_bind: %d/%d checks passed\n", g_checks - g_fail, g_checks);
 	return g_fail ? 1 : 0;
