@@ -41,7 +41,7 @@ test_hud_layout: test_hud_layout.c ../FlySight/hud_layout.c ../FlySight/hud_layo
 # formatter, no HAL and no FatFs, so it links straight from the host. The other
 # half (ble_diag_sink.c) is a clock and a f_write and is not testable here.
 test_ble_diag: test_ble_diag.c ../FlySight/ble_diag.c ../FlySight/ble_diag.h
-	$(CC) $(CFLAGS) -I../FlySight -o test_ble_diag test_ble_diag.c ../FlySight/ble_diag.c
+	$(CC) $(CFLAGS) -DFS_BLE_DIAG=1 -I../FlySight -o test_ble_diag test_ble_diag.c ../FlySight/ble_diag.c
 
 # The ENGO HUD state machine. Same copy-source-next-to-mocks trick as
 # test_engo_bind: activelook.c says #include "main.h"/"app_common.h"/"config.h"
