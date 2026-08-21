@@ -262,33 +262,36 @@ void (*Next_Adv_Callback)(void) = 0;
 /* Pairing request flag */
 uint8_t request_pairing = 0;
 
-/* Poisoned-bond self-heal (peripheral role).
+/* Link diagnostics for the peripheral role (DISC_EVAL in BLEDIAG.TXT).
  *
- * Observed on the Mac (bluetoothd log, 2026-08-18): a central that still holds
- * an LTK from an old pairing connects fine through the whitelist, immediately
- * starts encryption with that stale key, fails, and tears the link down within
- * a second — over and over, and it never falls back to fresh pairing while its
- * side still holds a key. The device cannot fix the central, but it can stop
- * matching it: after two consecutive links from the same identity that die
- * without a successful PAIRING_COMPLETE, that identity's bond is removed here.
- * The peer then drops off the whitelist, its next attempt (via PAIRING mode)
- * finds no key on our side, gets "key missing" at the link layer, and the
- * central re-pairs from scratch — which is the recovery path every stack
- * implements.
+ * These used to feed a "poisoned-bond self-heal": two consecutive central
+ * links that died without a successful PAIRING_COMPLETE evicted that
+ * identity's bond, and four escalated to aci_gap_clear_security_db(). It was
+ * written 2026-08-18 for a Mac whose stale LTK kept failing encryption, and
+ * it is GONE (2026-08-22) because on this hardware it destroyed healthy phone
+ * bonds instead:
  *
- * A healthy bonded reconnect re-encrypts within a few hundred ms and raises
- * PAIRING_COMPLETE status 0 (seen in BLEDIAG.TXT: CONN at 59496, PAIR_CPLT at
- * 59681), so it resets the counter and is never at risk. An unbonded stranger
- * browsing during a pairing window trips the counter, but removing a bond that
- * does not exist is a no-op. */
+ *  - "died fast" was < 3000 ms of HAL_GetTick, and HAL_GetTick STOPS in STOP
+ *    mode — on a sleeping logger a link idle for many real minutes still
+ *    measures a few hundred awake-ms, so ordinary sessions counted as deaths;
+ *  - a central with a stale bond on ITS side (or a user retrying pairing over
+ *    and over) produces exactly the streak the counter fed on, and at four
+ *    strikes the wipe erased EVERY bond on the device — the tablet's healthy
+ *    one included. Net effect in the field: the phone could connect only
+ *    right after a fresh pairing, then never again (its CONNECT_IND silently
+ *    dropped by the whitelist filter), which is the opposite of what a
+ *    self-heal is for.
+ *
+ * The Mac flashing path this protected is abandoned (owner's decision,
+ * 2026-08-21). Bonds are now removed exactly two ways, both deliberate:
+ * Reset_BLE: 1 in flysight.txt, or the one-shot wipe on the boot that first
+ * adopts the stored identity. A peer that lost its own keys still recovers
+ * via ACI_GAP_BOND_LOST -> aci_gap_allow_rebond below. */
 static uint8_t central_id_type;         /* identity of the connected central */
 static uint8_t central_id_addr[6];
 static uint8_t central_id_valid = 0;    /* identity above is populated */
 static uint8_t central_pair_ok = 0;     /* PAIR_CPLT status 0 seen on this link */
 static uint32_t central_conn_tick = 0;  /* HAL_GetTick at connection complete */
-static uint8_t central_fail_count = 0;  /* consecutive dead links, same identity */
-static uint8_t central_fail_type;
-static uint8_t central_fail_addr[6];
 
 /* The resolving list could not be updated (0x0C, command disallowed: the
  * controller refuses RL changes while scanning or advertising is enabled —
@@ -296,14 +299,6 @@ static uint8_t central_fail_addr[6];
  * When that happens the scan is terminated, this flag is raised, and
  * Scan_Request retries the rebuild before it starts the next scan. */
 static uint8_t resolving_list_dirty = 0;
-
-/* A bond removal the controller refused, to be tried once more from
- * Scan_Request — the one context where the ENGO scan is known to be stopped.
- * Whether the refusal happens at all is what the BOND_EVICT/DISC_EVAL records
- * are there to establish; this is the retry, not a claim about the cause. */
-static uint8_t pending_evict = 0;
-static uint8_t pending_evict_type;
-static uint8_t pending_evict_addr[6];
 
 /* BD Address of device to be connected once discovered */
 tBDAddr P2P_SERVER1_BDADDR;
@@ -582,100 +577,18 @@ SVCCTL_UserEvtFlowStatus_t SVCCTL_App_Notification(void *p_Pckt)
         BleApplicationContext.SmartPhone_Connection_Status = APP_BLE_IDLE;
         BleApplicationContext.connectionHandleCentral = 0xFFFF;
 
-        /* Poisoned-bond self-heal. A link that ends without a successful
-         * PAIRING_COMPLETE counts against its identity when it looks like a
-         * broken bond: an explicit security failure (0x05 authentication,
-         * 0x06 PIN/key missing, 0x3D MIC), or any death within 3 s of the
-         * connect — a stale-key central connects, fails encryption and drops
-         * in well under a second, while a human browsing and leaving takes
-         * longer. Two in a row from the same identity and that bond is
-         * removed, so the peer's next pairing attempt starts clean. */
-        /* Why the eviction did or did not fire, on EVERY central disconnect.
-         * The first attempt shipped only a BOND_EVICT line, which says nothing
-         * when the branch is never reached — and on the hardware it was not
-         * reached, or the removal failed, and the file could not tell the two
-         * apart. This line names every input the decision is made from. */
-        FS_BleDiag_Log("DISC_EVAL valid=%u pair_ok=%u reason=0x%02X dt=%u count=%u",
+        /* Diagnostics only — the eviction that used to hang off this record
+         * is gone (see the comment at central_id_type above). dt is in
+         * AWAKE milliseconds: HAL_GetTick stops in STOP mode, so on a
+         * sleeping logger it wildly understates wall time. That is one of
+         * the two reasons the eviction had to go, and the reason this value
+         * must never again be used as a decision input — it is a trace,
+         * not a clock. */
+        FS_BleDiag_Log("DISC_EVAL valid=%u pair_ok=%u reason=0x%02X dt=%u",
             (unsigned) central_id_valid, (unsigned) central_pair_ok,
             (unsigned) p_disconnection_complete_event->Reason,
-            (unsigned) (HAL_GetTick() - central_conn_tick),
-            (unsigned) central_fail_count);
+            (unsigned) (HAL_GetTick() - central_conn_tick));
 
-        if (central_id_valid && !central_pair_ok)
-        {
-          uint8_t reason = p_disconnection_complete_event->Reason;
-          uint8_t security_reason = (reason == 0x05) || (reason == 0x06)
-                                 || (reason == 0x3D);
-          uint8_t died_fast = (HAL_GetTick() - central_conn_tick) < 3000;
-
-          if (security_reason || died_fast)
-          {
-            if (central_fail_count > 0
-                && central_fail_type == central_id_type
-                && memcmp(central_fail_addr, central_id_addr, 6) == 0)
-            {
-              central_fail_count++;
-            }
-            else
-            {
-              central_fail_count = 1;
-              central_fail_type = central_id_type;
-              memcpy(central_fail_addr, central_id_addr, 6);
-            }
-
-            if (central_fail_count == 2)
-            {
-              tBleStatus evict_ret = aci_gap_remove_bonded_device(
-                  central_fail_type, central_fail_addr);
-#if FS_BLE_DIAG
-              {
-                char evictStr[18];
-                FS_BleDiag_FormatAddr(evictStr, sizeof(evictStr),
-                                      central_fail_addr);
-                FS_BleDiag_Log("BOND_EVICT type=%u addr=%s remove=0x%02X"
-                               " reason=0x%02X",
-                    (unsigned) central_fail_type, evictStr,
-                    (unsigned) evict_ret, (unsigned) reason);
-              }
-#endif
-              if (evict_ret != BLE_STATUS_SUCCESS)
-              {
-                /* Try again from Scan_Request, with the ENGO scan stopped. */
-                pending_evict = 1;
-                pending_evict_type = central_fail_type;
-                memcpy(pending_evict_addr, central_fail_addr, 6);
-                (void) aci_gap_terminate_gap_proc(GAP_GENERAL_DISCOVERY_PROC);
-              }
-            }
-            else if (central_fail_count >= 4)
-            {
-              /* Two more dead links after the surgical removal was attempted
-               * and retried: whatever aci_gap_remove_bonded_device did on this
-               * stack, it did not stop the peer getting back in — measured on
-               * hardware, six links in a row came up and died and the Mac was
-               * still being let through.
-               *
-               * aci_gap_clear_security_db is the one call PROVEN to empty this
-               * controller's bond table: it is what Reset_BLE: 1 uses
-               * (state.c:396, APP_BLE_Reset), a path that has worked on this
-               * unit for months. It is a bigger hammer — every bond goes, the
-               * tablet's included — so it is deliberately last, and it costs
-               * one double-press per device to pair again. Nothing healthy can
-               * reach this point: a peer that completes pairing resets the
-               * counter, and an unbonded stranger cannot get past the
-               * whitelist to start one. */
-              tBleStatus wipe_ret = aci_gap_clear_security_db();
-              central_fail_count = 0;
-              pending_evict = 0;
-              FS_BleDiag_Log("BOND_WIPE clear_security_db=0x%02X (ALL BONDS ERASED,"
-                             " every device must pair again)", (unsigned) wipe_ret);
-            }
-          }
-        }
-        else
-        {
-          central_fail_count = 0;
-        }
         central_id_valid = 0;
         central_pair_ok = 0;
 
@@ -1191,7 +1104,6 @@ SVCCTL_UserEvtFlowStatus_t SVCCTL_App_Notification(void *p_Pckt)
                   == BleApplicationContext.connectionHandleCentral)
           {
             central_pair_ok = 1;
-            central_fail_count = 0;
           }
           /* USER CODE END ACI_GAP_PAIRING_COMPLETE_VSEVT_CODE*/
           break;
@@ -2178,23 +2090,6 @@ static void Scan_Request(void)
    * advertising is up too (it also blocks RL changes), FS_Adv_Request redoes
    * the whole stop-rebuild-restart cycle; with the scan not yet running, the
    * rebuild inside it goes through. */
-  /* A refused bond removal, retried here and once only: this runs before the
-   * scan is started again, so if the controller was refusing because a GAP
-   * discovery was running, it will not be now. Either way the return code is
-   * recorded and the matter is settled rather than retried forever. */
-  if (pending_evict)
-  {
-    tBleStatus evict_retry = aci_gap_remove_bonded_device(pending_evict_type,
-                                                          pending_evict_addr);
-    FS_BleDiag_Log("BOND_EVICT retry remove=0x%02X", (unsigned) evict_retry);
-    pending_evict = 0;
-    if (evict_retry == BLE_STATUS_SUCCESS)
-    {
-      /* The whitelist still holds the peer until it is rebuilt. */
-      resolving_list_dirty = 1;
-    }
-  }
-
   if (resolving_list_dirty)
   {
     resolving_list_dirty = 0;
