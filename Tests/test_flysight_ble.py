@@ -738,7 +738,7 @@ class TestSelectDevice(unittest.TestCase):
         found = scan_result(
             (FakeBleDevice("AAAA"), FakeAdv("FlySight", -50)),
             (FakeBleDevice("BBBB"), FakeAdv("FlySight Viewer", -40)),
-            (FakeBleDevice("CCCC"), FakeAdv("ENGO 3 050714", -30)))
+            (FakeBleDevice("CCCC"), FakeAdv("ENGO 3 000000", -30)))
         device, name, rssi = fb.select_device(found)
         self.assertEqual(device.address, "AAAA")
         self.assertEqual(name, "FlySight")
