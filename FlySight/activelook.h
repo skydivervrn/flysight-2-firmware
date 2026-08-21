@@ -24,6 +24,8 @@
 #ifndef ACTIVELOOK_H_
 #define ACTIVELOOK_H_
 
+#include <stdbool.h>
+
 typedef enum {
     FS_AL_SETUP_IN_PROGRESS = 0,
     FS_AL_SETUP_DONE
@@ -31,6 +33,10 @@ typedef enum {
 
 void FS_ActiveLook_Init(void);
 void FS_ActiveLook_DeInit(void);
+
+/* True only while ACTIVE mode owns the ENGO central link. app_ble.c uses this
+ * to reject stale scan/connect work after ACTIVE has been left. */
+bool FS_ActiveLook_IsRunning(void);
 
 /* Write the "ENGO HUD v<ver>, AL_Rate <ms>" boot line to the event log.
  * Call AFTER FS_Log_Init (FS_ActiveLook_Init runs before logging is up). */

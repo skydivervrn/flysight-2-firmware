@@ -25,6 +25,7 @@
 #include "activelook.h"
 #include "activelook_proto.h"
 #include "app_common.h"
+#include "ble_diag.h"
 #include "log.h"
 #include "dbg_trace.h"
 #include "ble.h"
@@ -223,6 +224,8 @@ void FS_ActiveLook_Client_StartDiscovery(uint16_t connectionHandle)
 
     /* Step 1: request a bigger ATT MTU from the peripheral */
     tBleStatus s = aci_gatt_exchange_config(connectionHandle);
+    FS_BleDiag_Log("ENGO GATT start handle=0x%04X mtu_cmd=0x%02X",
+                   (unsigned) connectionHandle, (unsigned) s);
     if (s == BLE_STATUS_SUCCESS)
     {
         APP_DBG_MSG("ActiveLook_Client: Requesting MTU exchange...\n");
@@ -232,6 +235,10 @@ void FS_ActiveLook_Client_StartDiscovery(uint16_t connectionHandle)
         APP_DBG_MSG("ActiveLook_Client: aci_gatt_exchange_config fail=0x%02X\n", s);
         FS_Log_WriteEventAsync("ENGO GATT setup failed: MTU req 0x%02X", s);
         g_ctx.discState = DISC_STATE_IDLE;  // stop
+        /* A connected link with no discovery completion has no recovery path:
+         * the HUD remains Searching and app_ble believes it is CONNECTED.
+         * Drop it so the normal disconnect -> delayed rescan path can retry. */
+        FS_ActiveLook_Client_ForceDisconnect();
     }
 }
 
@@ -271,6 +278,10 @@ void FS_ActiveLook_Client_EventHandler(void *p_blecore_evt, uint8_t hci_event_ev
 
             if (pc->Connection_Handle != g_ctx.connHandle)
                 break; /* Not for us */
+
+            FS_BleDiag_Log("ENGO GATT proc state=%u err=0x%02X",
+                           (unsigned) g_ctx.discState,
+                           (unsigned) pc->Error_Code);
 
             if (g_ctx.discState == DISC_STATE_EXCH_MTU)
             {
@@ -419,7 +430,15 @@ void FS_ActiveLook_Client_EventHandler(void *p_blecore_evt, uint8_t hci_event_ev
                 APP_DBG_MSG("ActiveLook_Client: Discovery complete (no CCCDs to write).\n");
                 if (g_ctx.rxCharFound && g_ctx.cb && g_ctx.cb->OnDiscoveryComplete)
                 {
+                    FS_BleDiag_Log("ENGO GATT ready handle=0x%04X rx=0x%04X",
+                                   (unsigned) g_ctx.connHandle,
+                                   (unsigned) g_ctx.rxCharHandle);
                     g_ctx.cb->OnDiscoveryComplete();
+                }
+                else
+                {
+                    FS_BleDiag_Log("ENGO GATT incomplete: RX missing, reconnecting");
+                    FS_ActiveLook_Client_ForceDisconnect();
                 }
             }
             else if (g_ctx.discState == DISC_STATE_DESC_IN_PROGRESS)
@@ -562,7 +581,15 @@ void FS_ActiveLook_Client_EventHandler(void *p_blecore_evt, uint8_t hci_event_ev
                             g_ctx.rxCharHandle);
                 if (g_ctx.rxCharFound && g_ctx.cb && g_ctx.cb->OnDiscoveryComplete)
                 {
+                    FS_BleDiag_Log("ENGO GATT ready handle=0x%04X rx=0x%04X",
+                                   (unsigned) g_ctx.connHandle,
+                                   (unsigned) g_ctx.rxCharHandle);
                     g_ctx.cb->OnDiscoveryComplete();
+                }
+                else
+                {
+                    FS_BleDiag_Log("ENGO GATT incomplete: RX missing, reconnecting");
+                    FS_ActiveLook_Client_ForceDisconnect();
                 }
             }
         }
@@ -954,6 +981,11 @@ uint8_t FS_ActiveLook_Client_GetBatteryLevel(void)
  ******************************************************************************/
 void FS_ActiveLook_Client_OnDisconnect(void)
 {
+    FS_BleDiag_Log("ENGO GATT reset handle=0x%04X state=%u up=%u",
+                   (unsigned) g_ctx.connHandle,
+                   (unsigned) g_ctx.discState,
+                   (unsigned) g_ctx.linkUp);
+
     /* Preserve the callback pointer so it survives re-connection. */
     const FS_ActiveLook_ClientCb_t *savedCb = g_ctx.cb;
 

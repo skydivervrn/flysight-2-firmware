@@ -36,6 +36,7 @@ static int g_checks = 0, g_fail = 0;
 static void (*g_task)(void);      /* the FSM task, captured at RegTask       */
 static int   g_taskPending;       /* set by UTIL_SEQ_SetTask, cleared by pump */
 static int   g_scanRequested;
+static int   g_disconnectRequested;
 
 void UTIL_SEQ_RegTask(uint32_t taskMask, uint32_t flags, void (*task)(void))
 {
@@ -48,6 +49,7 @@ void UTIL_SEQ_SetTask(uint32_t taskMask, uint32_t prio)
 	(void)prio;
 	if (taskMask == (1u << CFG_TASK_FS_ACTIVELOOK_ID)) g_taskPending = 1;
 	if (taskMask == (1u << CFG_TASK_START_SCAN_ID))    g_scanRequested = 1;
+	if (taskMask == (1u << CFG_TASK_DISCONN_DEV_1_ID)) g_disconnectRequested = 1;
 }
 
 /* Run the task as long as it keeps re-scheduling itself, like the sequencer
@@ -159,7 +161,7 @@ bool FS_ActiveLook_Mode0_DrainFrame(void)
  * through its one-shot CLEAR into the idle READY state with the timer armed. */
 static void bring_up_link(void)
 {
-	g_task = NULL; g_taskPending = 0; g_scanRequested = 0;
+	g_task = NULL; g_taskPending = 0; g_scanRequested = 0; g_disconnectRequested = 0;
 	g_timerCb = NULL; g_timerIdSlot = NULL; g_timerArmed = 0; g_timerStarts = 0;
 	g_clientCb = NULL;
 	g_canSend = 1; g_stopStuckMs = 0; g_writeFailStreak = 0;
@@ -172,6 +174,7 @@ static void bring_up_link(void)
 	CHECK(g_task != NULL);
 	CHECK(g_timerCb != NULL);
 	CHECK(g_scanRequested == 1);
+	CHECK(FS_ActiveLook_IsRunning());
 	CHECK(g_baroResets == 1);
 
 	CHECK(g_clientCb != NULL && g_clientCb->OnDiscoveryComplete != NULL);
@@ -331,6 +334,26 @@ int main(void)
 	CHECK(g_timerArmed == 0);
 	tick();
 	CHECK(g_mode0Updates == updatesBefore);
+
+	/* ------------------------------------------------------------------
+	 * 8. ACTIVE lifecycle: teardown closes the gate before asynchronous
+	 *    radio work runs. A discovery callback that arrives late must not
+	 *    resurrect the FSM or start the deleted timer; it drops the link.
+	 * ---------------------------------------------------------------- */
+	bring_up_link();
+	g_forceDisconnects = 0;
+	g_disconnectRequested = 0;
+	FS_ActiveLook_DeInit();
+	CHECK(!FS_ActiveLook_IsRunning());
+	CHECK(g_timerArmed == 0);
+	CHECK(g_disconnectRequested == 1);
+
+	g_timerStarts = 0;
+	g_taskPending = 0;
+	g_clientCb->OnDiscoveryComplete();
+	CHECK(g_forceDisconnects == 1);
+	CHECK(g_timerStarts == 0);
+	CHECK(g_taskPending == 0);
 
 	printf("activelook_fsm: %d/%d checks passed\n", g_checks - g_fail, g_checks);
 	return g_fail ? 1 : 0;

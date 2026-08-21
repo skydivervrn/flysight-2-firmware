@@ -1,6 +1,7 @@
 #include "main.h"
 #include "activelook.h"
 #include "activelook_client.h"
+#include "ble_diag.h"
 #include "activelook_mode0.h"
 #include "activelook_proto.h"
 #include "app_common.h"
@@ -25,6 +26,7 @@ typedef enum
 
 /*----- Module-level static variables -----*/
 static FS_ActiveLook_State_t s_state = AL_STATE_INIT;
+static bool s_running = false;
 
 static uint8_t timer_id;
 
@@ -90,6 +92,14 @@ void AL_SelectMode(uint8_t modeId)
  ******************************************************************************/
 static void OnActiveLookDiscoveryComplete(void)
 {
+    /* A connection can finish after ACTIVE has already been left. Never let a
+     * late GATT callback resurrect the HUD FSM or start a deleted timer. */
+    if (!s_running)
+    {
+        FS_ActiveLook_Client_ForceDisconnect();
+        return;
+    }
+
     APP_DBG_MSG("ActiveLook: Discovery complete\n");
 
     FS_Log_WriteEventAsync("ENGO link ready (MTU %u)",
@@ -380,7 +390,8 @@ void FS_ActiveLook_OnDisconnect(void)
     APP_DBG_MSG("ActiveLook: Disconnect — resetting FSM\n");
 
     /* Stop the periodic update timer (safe to call even when not running) */
-    HW_TS_Stop(timer_id);
+    if (s_running)
+        HW_TS_Stop(timer_id);
 
     /* Reset FSM to disconnected/idle — OnActiveLookDiscoveryComplete will
      * restart it cleanly when the glasses reconnect. */
@@ -402,6 +413,9 @@ void FS_ActiveLook_LogBootInfo(void)
 
 void FS_ActiveLook_Init(void)
 {
+    s_running = true;
+    FS_BleDiag_Log("ENGO lifecycle ACTIVE");
+
     /* Re-zero the barometric altitude at every ACTIVE entry ("switch-on"):
      * the device "off" is SLEEP with RAM retained, so without this the zero
      * point would survive across sessions. Deliberately NOT done on glasses
@@ -426,12 +440,24 @@ void FS_ActiveLook_Init(void)
 
 void FS_ActiveLook_DeInit(void)
 {
+	/* Close the lifecycle gate before queuing asynchronous radio teardown.
+	 * Otherwise its later disconnection event restarts scanning outside ACTIVE,
+	 * allowing powered-on glasses to reconnect and receive retained sensor data. */
+	s_running = false;
+	FS_BleDiag_Log("ENGO lifecycle STOP");
+
 	/* Reset state */
 	s_state = AL_STATE_INIT;
 
 	/* Delete update timer */
+	HW_TS_Stop(timer_id);
 	HW_TS_Delete(timer_id);
 
     /* Disconnect from the device if desired */
     UTIL_SEQ_SetTask(1 << CFG_TASK_DISCONN_DEV_1_ID, CFG_SCH_PRIO_0);
+}
+
+bool FS_ActiveLook_IsRunning(void)
+{
+    return s_running;
 }
