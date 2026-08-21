@@ -1902,7 +1902,7 @@ static void FS_Adv_Request(APP_BLE_ConnStatus_t NewStatus)
     ret = aci_gap_set_undirected_connectable(Min_Inter,
                                              Max_Inter,
                                              CFG_BLE_ADDRESS_TYPE,
-                                             HCI_ADV_FILTER_WHITELIST_SCAN_CONNECT);
+                                             ADV_FILTER);
     if (ret != BLE_STATUS_SUCCESS)
     {
       APP_DBG_MSG("==>> aci_gap_set_undirected_connectable - fail, result: 0x%x \n", ret);
@@ -1912,12 +1912,15 @@ static void FS_Adv_Request(APP_BLE_ConnStatus_t NewStatus)
       APP_DBG_MSG("==>> aci_gap_set_undirected_connectable - Success\n");
     }
 
-    /* Outside the explicit pairing window, only bonded centrals admitted by
-     * the controller's whitelist may connect. Privacy is enabled, so their RPA
-     * is resolved through the controller resolving list first. */
+    /* Keep the logger on its stable random identity address. Android 13 did
+     * not retain the local IRK when the bond was originally created while
+     * privacy was disabled; switching a live installation to RPA advertising
+     * consequently made the same FlySight look like a new device after every
+     * reboot. The GATT security requirements still enforce pairing/bonding;
+     * this filter only controls who may establish the otherwise inert link. */
     FS_BleDiag_Log("ADV path=undirected_connectable filter=0x%02X ret=0x%02X status=%u"
                    " bonds=%d int=%u-%u",
-        (unsigned) HCI_ADV_FILTER_WHITELIST_SCAN_CONNECT, (unsigned) ret,
+        (unsigned) ADV_FILTER, (unsigned) ret,
         (unsigned) NewStatus, (int) bonded, (unsigned) Min_Inter, (unsigned) Max_Inter);
 
     /* Update advertising data */
