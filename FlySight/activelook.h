@@ -44,4 +44,9 @@ void FS_ActiveLook_OnDisconnect(void);
  * that was paused mid-send when the CPU2 TX pool was momentarily full. */
 void FS_ActiveLook_TxPoolAvailable(void);
 
+/* Called from activelook_client.c when CB9 carries 0x01 (flow resume) — sends
+ * the rest of a frame the glasses paused mid-way, instead of leaving them held
+ * until the next update tick (which may skip if no value changed). */
+void FS_ActiveLook_OnFlowResume(void);
+
 #endif /* ACTIVELOOK_H_ */

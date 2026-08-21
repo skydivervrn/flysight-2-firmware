@@ -35,7 +35,9 @@ Tests/test_flight_detect
 Tests/test_engo_bind
 Tests/test_hud_layout
 Tests/test_ble_diag
+Tests/test_activelook_fsm
 Tests/build_engo_bind/
+Tests/build_al_fsm/
 Tests/*.dSYM/
 __pycache__/
 

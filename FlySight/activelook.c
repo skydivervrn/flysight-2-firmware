@@ -245,24 +245,30 @@ static void FS_ActiveLook_Task(void)
 
     case AL_STATE_CLEAR:
     {
-        /* Gate on flow control — skip this tick if not ready */
-        if (!FS_ActiveLook_Client_CanSend()) {
-            break;
-        }
-
-        uint8_t packet[AL_FRAME_OVERHEAD];  /* clear has no payload: exactly 5 bytes */
-        size_t plen = AL_BuildFrame(packet, sizeof(packet),
-                                    AL_CMD_CLEAR, NULL, 0);
-        if (plen == 0) {
-            /* Frame build failed — retry next tick (don't advance) */
-            break;
-        }
-
-        APP_DBG_MSG("ActiveLook: Clearing display...\n");
-        tBleStatus st = FS_ActiveLook_Client_WriteWithoutResp(packet, (uint16_t)plen);
-        if (st != BLE_STATUS_SUCCESS) {
-            /* Write failed — retry next tick (don't advance) */
-            break;
+        /* One-shot wipe of whatever the glasses were showing before we linked.
+         *
+         * It is BEST EFFORT on purpose. This state is entered exactly once, from
+         * OnActiveLookDiscoveryComplete, and the update timer is not running yet
+         * — it is started right here. So any early return that left s_state at
+         * CLEAR wedged the HUD before it ever drew a frame: no timer, no task,
+         * no watchdog, and the link staying up the whole time. The three ways
+         * out (glasses asserting STOP in the moment between the CCCD write and
+         * this task running, a full CPU2 TX pool, a frame that would not build)
+         * are all transient, and none of them is worth that.
+         *
+         * Losing the wipe costs nothing anyway: every Mode0 frame opens with its
+         * own clear (AL_FrameAddClear), so the screen is wiped again within one
+         * tick regardless. */
+        if (FS_ActiveLook_Client_CanSend())
+        {
+            uint8_t packet[AL_FRAME_OVERHEAD];  /* clear has no payload: exactly 5 bytes */
+            size_t plen = AL_BuildFrame(packet, sizeof(packet),
+                                        AL_CMD_CLEAR, NULL, 0);
+            if (plen != 0)
+            {
+                APP_DBG_MSG("ActiveLook: Clearing display...\n");
+                (void)FS_ActiveLook_Client_WriteWithoutResp(packet, (uint16_t)plen);
+            }
         }
 
         /* Now go idle. Wait for the update timer to fire */
@@ -302,8 +308,18 @@ static void FS_ActiveLook_Task(void)
             s_state = AL_STATE_READY;
             break;
         }
-        /* Gate on flow control — defer this tick if not ready */
+        /* Gate on flow control — defer this tick if not ready.
+         *
+         * Go back to READY before deferring. Nothing else re-enters this state:
+         * FS_ActiveLook_Timer only promotes READY -> UPDATE, and
+         * FS_ActiveLook_TxPoolAvailable only wakes the task when a frame is
+         * half-sent. Breaking out while still in UPDATE therefore stopped the
+         * timer from ever scheduling the task again — and since the STOP-stuck
+         * watchdog above lives inside this very case, the one thing that could
+         * have recovered the link went deaf with it. The HUD froze while BLE
+         * stayed up, with no self-heal and nothing in the log. */
         if (!FS_ActiveLook_Client_CanSend()) {
+            s_state = AL_STATE_READY;
             break;
         }
         if (s_currentMode && s_currentMode->update)
@@ -329,6 +345,25 @@ static void FS_ActiveLook_Timer(void)
  * the push-back) instead of waiting for the next 1 s update tick.
  ******************************************************************************/
 void FS_ActiveLook_TxPoolAvailable(void)
+{
+    if (FS_ActiveLook_Mode0_HasPendingFrame())
+        UTIL_SEQ_SetTask(1 << CFG_TASK_FS_ACTIVELOOK_ID, CFG_SCH_PRIO_0);
+}
+
+/*******************************************************************************
+ * Called from activelook_client.c when the glasses send 0x01 (resume) on CB9.
+ *
+ * A STOP that lands in the middle of a frame leaves the glasses HELD: the
+ * opening holdFlush(HOLD) went out, the closing FLUSH did not, so the display
+ * shows the previous frame until the rest is sent. Waiting for the next update
+ * tick is not enough — that tick may find no changed values and return without
+ * touching the pending frame, leaving the screen held indefinitely. So finish
+ * the frame as soon as the glasses say they can take it again.
+ *
+ * Same shape as FS_ActiveLook_TxPoolAvailable above: the client layer notifies,
+ * the app layer decides what to schedule.
+ ******************************************************************************/
+void FS_ActiveLook_OnFlowResume(void)
 {
     if (FS_ActiveLook_Mode0_HasPendingFrame())
         UTIL_SEQ_SetTask(1 << CFG_TASK_FS_ACTIVELOOK_ID, CFG_SCH_PRIO_0);

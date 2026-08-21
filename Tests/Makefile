@@ -9,7 +9,7 @@ CFLAGS = -Wall -Wextra -std=c99 -g
 PYTHON = python3
 
 TESTS = test_time test_activelook test_flight_detect test_engo_bind test_hud_layout \
-        test_ble_diag
+        test_ble_diag test_activelook_fsm
 
 all: $(TESTS)
 
@@ -43,6 +43,26 @@ test_hud_layout: test_hud_layout.c ../FlySight/hud_layout.c ../FlySight/hud_layo
 test_ble_diag: test_ble_diag.c ../FlySight/ble_diag.c ../FlySight/ble_diag.h
 	$(CC) $(CFLAGS) -I../FlySight -o test_ble_diag test_ble_diag.c ../FlySight/ble_diag.c
 
+# The ENGO HUD state machine. Same copy-source-next-to-mocks trick as
+# test_engo_bind: activelook.c says #include "main.h"/"app_common.h"/"config.h"
+# etc., and quoted includes look in the includer's own directory first, so the
+# real CubeMX/HAL headers would win if it were compiled in place. The mocks are
+# only the sequencer, the timer server and the ActiveLook client — which is
+# exactly what drives the FSM, so the FSM under test is the real one.
+AL_FSM_MOCKS = al_mock/main.h al_mock/app_common.h al_mock/stm32_seq.h \
+               al_mock/dbg_trace.h al_mock/log.h al_mock/config.h \
+               al_mock/activelook_client.h
+
+test_activelook_fsm: test_activelook_fsm.c ../FlySight/activelook.c ../FlySight/activelook.h \
+                     ../FlySight/activelook_mode0.h ../FlySight/activelook_proto.c \
+                     ../FlySight/activelook_proto.h $(AL_FSM_MOCKS)
+	rm -rf build_al_fsm && mkdir build_al_fsm
+	cp test_activelook_fsm.c ../FlySight/activelook.c ../FlySight/activelook.h \
+	   ../FlySight/activelook_mode0.h ../FlySight/activelook_proto.c \
+	   ../FlySight/activelook_proto.h $(AL_FSM_MOCKS) build_al_fsm/
+	$(CC) $(CFLAGS) -o test_activelook_fsm build_al_fsm/test_activelook_fsm.c \
+	   build_al_fsm/activelook.c build_al_fsm/activelook_proto.c
+
 run: all
 	@echo "=== test_time ===";          ./test_time
 	@echo "=== test_activelook ===";    ./test_activelook
@@ -50,11 +70,12 @@ run: all
 	@echo "=== test_engo_bind ===";     ./test_engo_bind
 	@echo "=== test_hud_layout ===";   ./test_hud_layout
 	@echo "=== test_ble_diag ===";     ./test_ble_diag
+	@echo "=== test_activelook_fsm ==="; ./test_activelook_fsm
 	@echo "=== test_flysight_ble ==="; $(PYTHON) test_flysight_ble.py
 	@echo "=== test_flysight_app ==="; $(PYTHON) test_flysight_app.py
 
 clean:
 	rm -f $(TESTS)
-	rm -rf build_engo_bind $(addsuffix .dSYM,$(TESTS)) __pycache__
+	rm -rf build_engo_bind build_al_fsm $(addsuffix .dSYM,$(TESTS)) __pycache__
 
 .PHONY: all run clean

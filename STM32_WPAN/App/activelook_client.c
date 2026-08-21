@@ -22,6 +22,7 @@
 ****************************************************************************/
 
 #include "activelook_client.h"
+#include "activelook.h"
 #include "activelook_proto.h"
 #include "app_common.h"
 #include "log.h"
@@ -723,6 +724,14 @@ void FS_ActiveLook_Client_EventHandler(void *p_blecore_evt, uint8_t hci_event_ev
                     case AL_FLOW_OK:
                         g_ctx.lastCtrlByte  = AL_FLOW_OK;
                         g_ctx.stopSinceTick = 0;
+                        /* Tell the app the gate opened. Without this the resume
+                         * changed a variable and woke nothing, so a frame that
+                         * STOP had paused mid-way waited for the next update
+                         * tick — and that tick skips entirely when no value
+                         * changed, leaving the glasses held on a stale screen.
+                         * Same direction of call as OnDiscoveryComplete above:
+                         * the client notifies, the app decides. */
+                        FS_ActiveLook_OnFlowResume();
                         break;
                     case AL_FLOW_STOP:
                         if (g_ctx.lastCtrlByte != AL_FLOW_STOP)
