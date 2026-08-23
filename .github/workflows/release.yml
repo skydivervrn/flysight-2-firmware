@@ -60,7 +60,7 @@ jobs:
           cp build/UserApp.bin Deploy/Firmware_As_Built/UserApp.bin
           mkdir -p out
           cd Deploy
-          for B in B2 B3 B4 B5 B6; do
+          for B in B2 B3 B4 B5 B6 B7; do
             k=$(echo "$B" | tr 'A-Z' 'a-z')
             ../.venv/bin/python -c "import deploy_firmware as d; d.encrypt_firmware_with_key('Firmware_As_Built/UserApp.bin','UserApp','Public_Keys/pub_key_${k}.bin','${B}')"
             cp "Firmware_To_Deploy/${B}_UserApp.sfb" "../out/FlySight2-ENGO-HUD-${B}.sfb"
@@ -84,6 +84,8 @@ jobs:
           - configurable HUD layout and position controls.
 
           Choose the file matching the `Pubkey_X` batch in `FLYSIGHT.TXT`, rename it to `APP.SFB`, and install it using Groundrush, the web flasher, or the orange-light USB bootloader. The wrong batch is safely ignored.
+
+          Batches B2-B7 are covered. The B7 key was read from a device's own `FLYSIGHT.TXT` rather than published upstream, so that batch name is provisional and its image has not yet been confirmed on hardware.
           EOF
           gh release create "$GITHUB_REF_NAME" \
             --title "$GITHUB_REF_NAME" \
