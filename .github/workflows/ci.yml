@@ -1,0 +1,63 @@
+name: CI
+
+# The gate for every branch: host unit tests plus a clean firmware build.
+#
+# `nightly.yml` already does both, but only on a push to `engo-hud-public`,
+# and it ends by publishing a pre-release. Development happens on other
+# branches, which were therefore not gated at all. This workflow closes that
+# gap and deliberately stops at the build: it encrypts nothing, uploads
+# nothing and creates no release, so it can safely run on any branch.
+#
+# Keep it that way. If a check belongs here and in the nightly, add it here
+# and leave the nightly alone — an accidental publish from a work branch is
+# worse than a missing check.
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      # fetch-depth: 0 so tags are present: the Makefile turns `git describe`
+      # into GIT_TAG -> Firmware_Ver, and without tags it degrades to a bare
+      # short sha.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Same path and cache key as nightly.yml, so the two share one cache
+      # entry instead of each downloading 100 MB of toolchain.
+      - name: Cache Arm GNU toolchain 12.3
+        id: cache-toolchain
+        uses: actions/cache@v4
+        with:
+          path: ~/opt/arm-gnu-toolchain-12.3.rel1-x86_64-arm-none-eabi
+          key: armgnu-12.3.rel1-x86_64
+
+      # GCC 12.3 specifically: 14.x produces an image that installs but does
+      # not boot on this MCU (see Docs/BUILDING.md).
+      - name: Install Arm GNU toolchain 12.3
+        if: steps.cache-toolchain.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/opt && cd ~/opt
+          curl -fSL -o armgnu.tar.xz \
+            https://developer.arm.com/-/media/Files/downloads/gnu/12.3.rel1/binrel/arm-gnu-toolchain-12.3.rel1-x86_64-arm-none-eabi.tar.xz
+          tar -xf armgnu.tar.xz
+          rm armgnu.tar.xz
+
+      - name: Host unit tests
+        run: cd Tests && make run
+
+      - name: Build firmware
+        run: |
+          make PREFIX=$HOME/opt/arm-gnu-toolchain-12.3.rel1-x86_64-arm-none-eabi/bin/arm-none-eabi-
+          test -f build/UserApp.bin
