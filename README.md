@@ -247,7 +247,8 @@ Each session's `EVENT.CSV` logs the bind state at boot
 
 See [Docs/BUILDING.md](Docs/BUILDING.md) — CLI build (no STM32CubeIDE), Arm
 GNU 12.3, plus the ECIES encrypt + file-drop flash flow and every pitfall we
-hit on the way.
+hit on the way. It opens with which branch to build: `engo-hud-public` is the
+canonical one, and releases come from it.
 
 ## Feedback / issues
 

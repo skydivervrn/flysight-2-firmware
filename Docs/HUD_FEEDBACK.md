@@ -9,11 +9,14 @@ built in separate trees and only meet on the SD card.
 
 ## Where the work lives
 
-| Tree | Branch | Base |
+| Side | Branch | Base |
 | --- | --- | --- |
-| `/tmp/fs2fb` (firmware) | `fb-units-rate` | `hud-layout` @ `384b589` |
-| `~/code/personal/groundrush-wt-fb-hud` (app) | `fb-hud` | `hud-layout` @ `6a4a6eb` |
-| `~/code/personal/groundrush-wt-fb-device` (app) | `fb-device` | `hud-layout` @ `6a4a6eb` |
+| firmware | `fb-units-rate` | `hud-layout` @ `384b589` |
+| app | `fb-hud` | `hud-layout` @ `6a4a6eb` |
+| app | `fb-device` | `hud-layout` @ `6a4a6eb` |
+
+Branches, not directories: working copies move around, and the firmware ones
+are described in [BUILDING.md](BUILDING.md#which-branch--the-source-of-truth).
 
 `fb-hud` and `fb-device` touch disjoint files and are meant to be merged
 together. Nothing here is pushed or released until the owner has flown it.

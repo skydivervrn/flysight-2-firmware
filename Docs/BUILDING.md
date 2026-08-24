@@ -5,6 +5,26 @@ FlySight ECIES file-drop mechanism — **no private/signing keys and no SWD prob
 needed**. Firmware is encrypted to the device's per-batch PUBLIC key
 (`Deploy/Public_Keys/pub_key_bX.bin`, published by the maintainer).
 
+## Which branch — the source of truth
+
+- **`engo-hud-public` — canonical.** Every release is built from it, and it is
+  the only branch `.github/workflows/nightly.yml` publishes from. If you are
+  building a firmware to flash on a device, build this one.
+- **`fb-units-rate` — active development.** Gated by
+  `.github/workflows/ci.yml` (host tests + a clean build) like every other
+  branch, but not released from and not flown until it has been promoted.
+- Promotion is **fast-forward only**: bring the work branch up to date on top
+  of `engo-hud-public` first (rebase, resolve there, re-run `cd Tests && make
+  run`), then advance `engo-hud-public` to it. No merge commits, so the public
+  history stays linear and every released commit is one that CI has seen.
+- ⛔ **`engo-hud` is archival and must never be published.** It carries
+  non-publishable history, it shares no ancestry with `engo-hud-public`, and
+  nothing on it may be pushed, cherry-picked verbatim or merged. Anything still
+  wanted from it gets rewritten onto a current branch.
+
+Older notes may point at checkouts that have since moved; branch names above
+are the thing to trust, not any particular working directory.
+
 ## 0. One-time setup
 
 ```bash
