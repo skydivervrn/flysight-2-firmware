@@ -26,7 +26,11 @@ extern char   g_fakeContent[256];
 extern int    g_fakeExists;
 extern size_t g_fakeLen;
 
-typedef struct { int writing; size_t rpos; } FIL;
+typedef struct { int writing; size_t rpos; int err; } FIL;
+
+/* Matches the real ff.h. f_gets returns NULL for end-of-file *and* for a read
+ * fault; this is the only thing that tells the two apart. */
+#define f_error(fp) ((fp)->err)
 
 FRESULT f_open(FIL *fp, const char *path, int mode);
 char   *f_gets(char *buff, int len, FIL *fp);

@@ -23,17 +23,23 @@ static int g_failWriteAt;    /* this f_write returns FR_DISK_ERR   */
 static int g_shortWriteAt;   /* this f_write returns FR_OK, bw-1   */
 static int g_failSync;       /* f_sync returns FR_DISK_ERR         */
 static int g_failClose;      /* f_close returns FR_DISK_ERR        */
+/* Read-path faults. These separate "the card says there is no binding" from
+ * "the card would not answer", and the whole recovery rule turns on it. */
+static int g_failReadOpen;   /* f_open(FA_READ) -> FR_DISK_ERR, not FR_NO_FILE */
+static int g_failRead;       /* f_gets -> NULL with f_error() set              */
 
 static void card_healthy(void)
 {
 	g_writeCalls = 0;
 	g_failWriteAt = g_shortWriteAt = g_failSync = g_failClose = 0;
+	g_failReadOpen = g_failRead = 0;
 }
 
 FRESULT f_open(FIL *fp, const char *path, int mode)
 {
 	(void)path;
 	fp->rpos = 0;
+	fp->err  = 0;
 	if (mode & FA_CREATE_NEW)
 	{
 		if (g_fakeExists) return FR_EXIST;   /* never clobber */
@@ -41,7 +47,17 @@ FRESULT f_open(FIL *fp, const char *path, int mode)
 		fp->writing = 1;
 		return FR_OK;
 	}
+	if (mode & FA_CREATE_ALWAYS)
+	{
+		/* Truncate-or-create: this is the self-heal path, and it is allowed to
+		 * land on an existing file precisely because the caller has already
+		 * established that the file is rubbish. */
+		g_fakeExists = 1; g_fakeLen = 0; g_fakeContent[0] = '\0';
+		fp->writing = 1;
+		return FR_OK;
+	}
 	/* read */
+	if (g_failReadOpen) return FR_DISK_ERR;   /* card unhealthy, NOT "no file" */
 	if (!g_fakeExists) return FR_NO_FILE;
 	fp->writing = 0;
 	return FR_OK;
@@ -50,6 +66,7 @@ FRESULT f_open(FIL *fp, const char *path, int mode)
 char *f_gets(char *buff, int len, FIL *fp)
 {
 	if (fp->writing) return NULL;
+	if (g_failRead) { fp->err = FR_DISK_ERR; return NULL; }
 	if (fp->rpos >= g_fakeLen) return NULL;
 	int i = 0;
 	while (i < len - 1 && fp->rpos < g_fakeLen)
@@ -248,6 +265,100 @@ int main(void)
 	FS_EngoBind_NotePending("123456");
 	FS_EngoBind_CommitIfPending();
 	CHECK(g_logLines == 1);
+
+	/* ---------------------------------------------------------------------
+	 * 18-23. Recovery. A binding that fails to write used to be a one-way
+	 * door: the stub left on the card is rejected by Load(), and the next
+	 * attempt's FA_CREATE_NEW then bounces off it with FR_EXIST, boot after
+	 * boot, until someone deleted the file over USB. The device could not be
+	 * re-bound in the field at all.
+	 *
+	 * The escape is deliberately narrow. "Not bound" is not enough to license
+	 * an overwrite, because a card that will not answer looks exactly like a
+	 * card full of garbage — and guessing wrong re-pins the device to whatever
+	 * glasses are switched on nearby. Only a file that was read AND closed
+	 * cleanly, and still did not parse, may be replaced.
+	 * ------------------------------------------------------------------- */
+
+	/* 18. Short write, then a reboot: the stub is recognised as rubbish and the
+	 *     next bind replaces it. This is the sequence that used to wedge. */
+	set_file(NULL);
+	card_healthy();
+	FS_EngoBind_Load();
+	g_shortWriteAt = 1;
+	FS_EngoBind_NotePending("123456");
+	FS_EngoBind_CommitIfPending();
+	CHECK(FS_EngoBind_IsBound() == false);
+	CHECK(g_fakeExists == 1);                       /* the stub is on the card */
+	card_healthy();
+	FS_EngoBind_Load();                             /* reboot */
+	CHECK(FS_EngoBind_IsBound() == false);          /* stub does not parse */
+	FS_EngoBind_NotePending("123456");
+	FS_EngoBind_CommitIfPending();
+	CHECK(FS_EngoBind_IsBound() == true);
+	CHECK(strcmp(g_fakeContent, "123456\n") == 0);
+
+	/* 19. A power cut leaves the same stub without any cleanup having run —
+	 *     no f_unlink, no rename, nothing. Recovery must not depend on the
+	 *     failing session getting a chance to tidy up after itself. */
+	set_file("123");                                 /* truncated, as if mid-write */
+	card_healthy();
+	FS_EngoBind_Load();
+	CHECK(FS_EngoBind_IsBound() == false);
+	FS_EngoBind_NotePending("654321");
+	FS_EngoBind_CommitIfPending();
+	CHECK(FS_EngoBind_IsBound() == true);
+	CHECK(strcmp(g_fakeContent, "654321\n") == 0);
+
+	/* 20. A valid binding is still never replaced automatically. */
+	set_file("AAAAAA\n");
+	card_healthy();
+	FS_EngoBind_Load();
+	CHECK(FS_EngoBind_IsBound() == true);
+	FS_EngoBind_NotePending("BBBBBB");
+	FS_EngoBind_CommitIfPending();
+	CHECK(strcmp(g_fakeContent, "AAAAAA\n") == 0);
+
+	/* 21. The card refuses to open the file for reading. That is NOT "no
+	 *     binding": a real serial may be sitting there. Nothing may be written,
+	 *     or a flaky reader would silently re-pin the device. */
+	set_file("AAAAAA\n");
+	card_healthy();
+	g_failReadOpen = 1;
+	FS_EngoBind_Load();
+	CHECK(FS_EngoBind_IsBound() == false);          /* unbound for this session */
+	g_failReadOpen = 0;                             /* card recovers mid-flight */
+	FS_EngoBind_NotePending("BBBBBB");
+	FS_EngoBind_CommitIfPending();
+	CHECK(strcmp(g_fakeContent, "AAAAAA\n") == 0);  /* binding survived */
+
+	/* 22. The open succeeds but the read faults. Same rule. */
+	set_file("AAAAAA\n");
+	card_healthy();
+	g_failRead = 1;
+	FS_EngoBind_Load();
+	CHECK(FS_EngoBind_IsBound() == false);
+	g_failRead = 0;
+	FS_EngoBind_NotePending("BBBBBB");
+	FS_EngoBind_CommitIfPending();
+	CHECK(strcmp(g_fakeContent, "AAAAAA\n") == 0);
+
+	/* 23. The file read as garbage, but the close failed — so we do not
+	 *     actually know the read was sound. Refuse, rather than call it
+	 *     invalid and overwrite. An empty file is the sharpest case: it looks
+	 *     exactly like a stub we would be entitled to replace. */
+	set_file("");
+	g_fakeExists = 1;                               /* present but zero length */
+	card_healthy();
+	g_failClose = 1;
+	FS_EngoBind_Load();
+	CHECK(FS_EngoBind_IsBound() == false);
+	g_failClose = 0;
+	g_logLines = 0;
+	FS_EngoBind_NotePending("BBBBBB");
+	FS_EngoBind_CommitIfPending();
+	CHECK(g_fakeLen == 0);                          /* nothing written */
+	CHECK(g_logLines == 1);                         /* and the refusal is logged */
 
 	printf("engo_bind: %d/%d checks passed\n", g_checks - g_fail, g_checks);
 	return g_fail ? 1 : 0;
