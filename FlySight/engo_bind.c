@@ -69,6 +69,7 @@ void FS_EngoBind_Load(void)
 	char line[40];
 
 	FRESULT fr;
+	char   *got;
 	bool    parsed = false;
 
 	s_bound        = false;
@@ -88,7 +89,26 @@ void FS_EngoBind_Load(void)
 		return;
 	}
 
-	if (f_gets(line, sizeof(line), &f) != NULL)
+	got = f_gets(line, sizeof(line), &f);
+
+	/* Check the error flag BEFORE looking at the buffer, and regardless of what
+	 * f_gets returned. FatFs ends with `return n ? buff : 0` (ff.c), so a read
+	 * that dies halfway still hands back everything it managed to collect, with
+	 * only f_error() to say so. Parsing that stump is how a good binding gets
+	 * destroyed two different ways: a short prefix looks like a corrupt file and
+	 * invites FA_CREATE_ALWAYS over a file that was fine, and a prefix of six or
+	 * more printable characters can pass serial_valid() outright — "ID:123456"
+	 * cut to "ID:123" pins the device to a serial that does not exist. */
+	if (f_error(&f))
+	{
+		f_close(&f);
+		s_fileState = ENGO_FILE_IO_ERROR;
+		s_bound = false;
+		s_serial[0] = '\0';
+		return;
+	}
+
+	if (got != NULL)
 	{
 		/* Trim trailing newline/space, then take the LAST 6 chars. This accepts
 		 * "123456", "ID: 123456" and even a full "ENGO 3 123456" line. */
@@ -112,16 +132,6 @@ void FS_EngoBind_Load(void)
 				s_serial[0] = '\0';
 			}
 		}
-	}
-	else if (f_error(&f))
-	{
-		/* f_gets returns NULL for both end-of-file and a read fault. An empty
-		 * file is rubbish we may replace; an unreadable one is not. */
-		f_close(&f);
-		s_fileState = ENGO_FILE_IO_ERROR;
-		s_bound = false;
-		s_serial[0] = '\0';
-		return;
 	}
 
 	fr = f_close(&f);

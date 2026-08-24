@@ -27,12 +27,16 @@ static int g_failClose;      /* f_close returns FR_DISK_ERR        */
  * "the card would not answer", and the whole recovery rule turns on it. */
 static int g_failReadOpen;   /* f_open(FA_READ) -> FR_DISK_ERR, not FR_NO_FILE */
 static int g_failRead;       /* f_gets -> NULL with f_error() set              */
+/* The nastier shape: the read dies PART WAY through. Real FatFs ends with
+ * `return n ? buff : 0`, so it hands back the characters it managed to collect
+ * and only f_error() says anything went wrong. 0 = read the whole line. */
+static int g_failReadAfterN;
 
 static void card_healthy(void)
 {
 	g_writeCalls = 0;
 	g_failWriteAt = g_shortWriteAt = g_failSync = g_failClose = 0;
-	g_failReadOpen = g_failRead = 0;
+	g_failReadOpen = g_failRead = g_failReadAfterN = 0;
 }
 
 FRESULT f_open(FIL *fp, const char *path, int mode)
@@ -71,12 +75,19 @@ char *f_gets(char *buff, int len, FIL *fp)
 	int i = 0;
 	while (i < len - 1 && fp->rpos < g_fakeLen)
 	{
+		if (g_failReadAfterN && i == g_failReadAfterN)
+		{
+			/* Mirrors ff.c: the loop breaks on the failed f_read, err is set,
+			 * and `return n ? buff : 0` still returns the partial line. */
+			fp->err = FR_DISK_ERR;
+			break;
+		}
 		char c = g_fakeContent[fp->rpos++];
 		buff[i++] = c;
 		if (c == '\n') break;
 	}
 	buff[i] = '\0';
-	return buff;
+	return i ? buff : NULL;
 }
 
 FRESULT f_write(FIL *fp, const void *buff, UINT btw, UINT *bw)
@@ -359,6 +370,50 @@ int main(void)
 	FS_EngoBind_CommitIfPending();
 	CHECK(g_fakeLen == 0);                          /* nothing written */
 	CHECK(g_logLines == 1);                         /* and the refusal is logged */
+
+	/* ---------------------------------------------------------------------
+	 * 24-26. A read that dies PART WAY through the line. This is the shape
+	 * that survives an f_gets != NULL check: FatFs ends with
+	 * `return n ? buff : 0`, so the call hands back whatever it collected
+	 * before the fault and only f_error() says anything is wrong. Checking
+	 * the flag solely on the NULL branch therefore parses a stump as if it
+	 * were the whole file.
+	 * ------------------------------------------------------------------- */
+
+	/* 24. Fewer than six characters survive. The stump looks like a corrupt
+	 *     file, and calling it invalid would license FA_CREATE_ALWAYS over a
+	 *     binding that is perfectly good. */
+	set_file("123456\n");
+	card_healthy();
+	g_failReadAfterN = 3;                            /* "123" then the card dies */
+	FS_EngoBind_Load();
+	CHECK(FS_EngoBind_IsBound() == false);
+	g_failReadAfterN = 0;
+	FS_EngoBind_NotePending("BBBBBB");
+	FS_EngoBind_CommitIfPending();
+	CHECK(strcmp(g_fakeContent, "123456\n") == 0);   /* untouched */
+
+	/* 25. Six or more characters survive, and the stump passes serial_valid()
+	 *     on its own. Without the flag check the device pins itself to a serial
+	 *     that does not exist: "ID:123456" cut to "ID:123". */
+	set_file("ID:123456\n");
+	card_healthy();
+	g_failReadAfterN = 6;
+	FS_EngoBind_Load();
+	CHECK(FS_EngoBind_IsBound() == false);           /* NOT bound to "ID:123" */
+	CHECK(FS_EngoBind_Serial()[0] == '\0');
+	g_failReadAfterN = 0;
+	FS_EngoBind_NotePending("BBBBBB");
+	FS_EngoBind_CommitIfPending();
+	CHECK(strcmp(g_fakeContent, "ID:123456\n") == 0);
+
+	/* 26. The same file read without a fault still binds to the real serial —
+	 *     the check must not have made the normal path unreachable. */
+	set_file("ID:123456\n");
+	card_healthy();
+	FS_EngoBind_Load();
+	CHECK(FS_EngoBind_IsBound() == true);
+	CHECK(strcmp(FS_EngoBind_Serial(), "123456") == 0);
 
 	printf("engo_bind: %d/%d checks passed\n", g_checks - g_fail, g_checks);
 	return g_fail ? 1 : 0;
