@@ -28,7 +28,6 @@
 #include "hud_layout.h"           // For the element list and the global offset
 #include "engo_bind.h"            // For FS_EngoBind_CommitIfPending()
 #include "flight_detect.h"        // For FS_FlightDetect_InFlight()
-#include "flight_params.h"
 #include "gnss.h"                 // For FS_GNSS_GetData()
 #include "nav.h"                  // For calcDirection, calcDistance, calcRelBearing
 #include "vbat.h"
@@ -53,7 +52,7 @@
  * Then the string on the glasses says exactly which build is running — the
  * whole point of this marker (Firmware_Ver in flysight.txt is unreliable). */
 #ifndef HUD_VERSION
-#define HUD_VERSION "0.0.26-diag"
+#define HUD_VERSION "0.0.27-diag"
 #endif
 
 /* Fonts VERIFIED on ENGO 3 (this unit) via Mac BLE bench 2026-07-20 — fontList
@@ -108,7 +107,13 @@ typedef double (*LineValueFn_t)(const FS_GNSS_Data_t*);
  * correction: user wants raw GPS telemetry matching the ground-speed charts
  * used for track analysis (decision 2026-07-22, from the 08-52-34 track
  * analysis: HUD showed 130 km/h SAS against 144 raw). Use_SAS in config still governs the
- * audio tones (audio_control.c) — only the glasses HUD is raw. */
+ * audio tones (audio_control.c) — only the glasses HUD is raw.
+ *
+ * Total speed was the one line that still applied it (owner, 2026-08-25:
+ * "SAS убрать везде"). Three numbers side by side on one screen, two of them
+ * raw and one corrected, differ by around 10 % at altitude and read as an
+ * instrument fault. With that call gone nothing in the glasses path uses the
+ * correction at all, which is why flight_params.c went with it. */
 static double LN_HSpeed(const FS_GNSS_Data_t *d) {
     return (double)d->gSpeed / 100.0; // cm/s to m/s, raw (no SAS)
 }
@@ -128,9 +133,7 @@ static double LN_InvGlideRatio(const FS_GNSS_Data_t *d) {
     return 0.0; // Or some indicator
 }
 static double LN_TotalSpeed(const FS_GNSS_Data_t *d) {
-    double base_speed = (double)d->speed / 100.0; // cm/s to m/s
-    double correction_factor = FS_FlightParams_GetSASCorrectionFactor(d->hMSL);
-    return base_speed * correction_factor;
+    return (double)d->speed / 100.0; // cm/s to m/s, raw (no SAS)
 }
 static double LN_DirToDest(const FS_GNSS_Data_t *d) {
     const FS_Config_Data_t *cfg = FS_Config_Get();
