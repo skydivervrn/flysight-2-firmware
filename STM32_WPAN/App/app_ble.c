@@ -44,6 +44,7 @@
 /* USER CODE BEGIN Includes */
 #include "common.h"
 #include "state.h"
+#include "activelook_adv.h"
 #include "activelook_client.h"
 #include "activelook.h"
 #include "ble_diag.h"
@@ -516,9 +517,7 @@ SVCCTL_UserEvtFlowStatus_t SVCCTL_App_Notification(void *p_Pckt)
   hci_le_advertising_report_event_rp0 * le_advertising_event;
   uint8_t result;
   uint8_t role, event_type, event_data_size;
-  int k = 0;
   uint8_t *adv_report_data;
-  uint8_t adtype, adlength;
   uint16_t connection_handle;
 
   /* PAIRING */
@@ -727,116 +726,30 @@ SVCCTL_UserEvtFlowStatus_t SVCCTL_App_Notification(void *p_Pckt)
           RSSI = (int8_t)*(uint8_t*) (adv_report_data + le_advertising_event->Advertising_Report[0].Length_Data);
           */
           adv_report_data = (uint8_t*)(&le_advertising_event->Advertising_Report[0].Length_Data) + 1;
-          k = 0;
-
-          /*
-           * ActiveLook command service UUID (little-endian):
-           *   0783B03E-8535-B5A0-7140-A304D2495CB7
-           * LE bytes: B7 5C 49 D2 04 A3 40 71 A0 B5 35 85 3E B0 83 07
-           */
-          static const uint8_t activelook_svc_uuid[16] = {
-              0xB7, 0x5C, 0x49, 0xD2, 0x04, 0xA3, 0x40, 0x71,
-              0xA0, 0xB5, 0x35, 0x85, 0x3E, 0xB0, 0x83, 0x07
-          };
-
-          /* Flags to track match within this advertising report */
-          uint8_t foundUUID = 0;   /* ActiveLook service UUID found */
-          uint8_t foundName = 0;   /* Name prefix "ENGO" found */
-          char    candSerial[FS_ENGO_SERIAL_LEN + 1] = {0}; /* trailing 6 chars of name = ENGO serial */
-          uint8_t haveSerial = 0;  /* candSerial is populated */
-          char    candName[17] = {0};  /* advertised name, for the event log */
 
           /* Process both ADV_IND and SCAN_RSP so service UUID in scan response is caught */
           if (event_type == ADV_IND || event_type == SCAN_RSP)
           {
-            while(k < event_data_size)
+            FS_ActiveLookAdvResult adv;
+            uint8_t validAdv = FS_ActiveLookAdv_Parse(adv_report_data,
+                                                       event_data_size, &adv);
+            uint8_t foundUUID = adv.found_uuid;
+            uint8_t foundName = adv.found_name;
+            uint8_t haveSerial = adv.have_serial;
+            const char *candSerial = adv.serial;
+            const char *candName = adv.name;
+
+            if (!validAdv)
+              APP_DBG_MSG("-- Malformed advertising data ignored\n\r");
+            else
             {
-              adlength = adv_report_data[k];
-              if (adlength == 0) break; /* malformed — stop */
-              adtype = adv_report_data[k + 1];
-
-              if (adtype == AD_TYPE_128_BIT_SERV_UUID ||
-                  adtype == AD_TYPE_128_BIT_SERV_UUID_CMPLT_LIST)
-              {
-                /* Each UUID is 16 bytes; there may be multiple */
-                uint8_t uuid_data_len = adlength - 1;
-                const uint8_t *uuid_data = &adv_report_data[k + 2];
-                uint8_t ui;
-                for (ui = 0; ui + 16 <= uuid_data_len; ui += 16)
-                {
-                  if (memcmp(&uuid_data[ui], activelook_svc_uuid, 16) == 0)
-                  {
-                    APP_DBG_MSG("-- Found ActiveLook service UUID in adv data\n\r");
-                    foundUUID = 1;
-                    break;
-                  }
-                }
-              }
-              else if (adtype == AD_TYPE_COMPLETE_LOCAL_NAME ||
-                       adtype == AD_TYPE_SHORTENED_LOCAL_NAME)
-              {
-                const uint8_t *name_data = &adv_report_data[k + 2];
-                uint8_t name_len = adlength - 1;
-
-                /* Keep a copy for the event log (prefer the complete name). */
-                if (candName[0] == '\0' || adtype == AD_TYPE_COMPLETE_LOCAL_NAME)
-                {
-                  uint8_t ci, cn = name_len < 16 ? name_len : 16;
-                  for (ci = 0; ci < cn; ci++) candName[ci] = (char)name_data[ci];
-                  candName[cn] = '\0';
-                }
-
-                APP_DBG_MSG("-- Found Device Name: '");
-                {
-                  uint8_t ni;
-                  for (ni = 0; ni < name_len; ni++) { APP_DBG_MSG("%c", name_data[ni]); }
-                }
-                APP_DBG_MSG("'\n\r");
-
-                /* Capture the trailing 6 chars of the name = ENGO Customer Serial
-                 * (e.g. "ENGO 3 123456" -> "123456"). Per the ActiveLook API the
-                 * serial is the last 6 chars of the COMPLETE 16-char name; a
-                 * SHORTENED name is truncated at the tail, so its last 6 chars are
-                 * NOT the serial — never capture from it (a wrong capture would be
-                 * permanently auto-bound to engo3.txt). */
-                if (adtype == AD_TYPE_COMPLETE_LOCAL_NAME &&
-                    name_len >= FS_ENGO_SERIAL_LEN)
-                {
-                  uint8_t si;
-                  for (si = 0; si < FS_ENGO_SERIAL_LEN; si++)
-                    candSerial[si] = (char)name_data[name_len - FS_ENGO_SERIAL_LEN + si];
-                  candSerial[FS_ENGO_SERIAL_LEN] = '\0';
-                  haveSerial = 1;
-                }
-
-                /* Case-insensitive match of known ActiveLook/ENGO advertised-name
-                 * prefixes. ENGO 2/3 advertise "ENGO ..."; other ActiveLook devices
-                 * use "AL-"/"AL "/"ActiveLook"/"A.Look". The name may live only in the
-                 * scan response, which is why we run an active scan and parse both. */
-                {
-                  static const char *al_prefixes[] = { "ENGO", "AL-", "AL ", "ACTIVELOOK", "A.LOOK" };
-                  uint8_t pi;
-                  for (pi = 0; pi < 5 && !foundName; pi++)
-                  {
-                    const char *pfx = al_prefixes[pi];
-                    uint8_t plen = (uint8_t)strlen(pfx);
-                    if (name_len >= plen)
-                    {
-                      uint8_t mi, ok = 1;
-                      for (mi = 0; mi < plen; mi++)
-                      {
-                        uint8_t c = name_data[mi];
-                        if (c >= 'a' && c <= 'z') c = (uint8_t)(c - 32); /* to upper */
-                        if (c != (uint8_t)pfx[mi]) { ok = 0; break; }
-                      }
-                      if (ok) { foundName = 1; APP_DBG_MSG("-- Name prefix '%s' matched\n\r", pfx); }
-                    }
-                  }
-                }
-              }
-
-              k += adlength + 1;
-            } /* end while(k < event_data_size) */
+              if (foundUUID)
+                APP_DBG_MSG("-- Found ActiveLook service UUID in adv data\n\r");
+              if (candName[0])
+                APP_DBG_MSG("-- Found Device Name: '%s'\n\r", candName);
+              if (foundName)
+                APP_DBG_MSG("-- ActiveLook name prefix matched\n\r");
+            }
 
             /* Decide whether to accept this device.
              *  - BOUND   (engo3.txt present): must be an ActiveLook device (UUID or
@@ -849,7 +762,7 @@ SVCCTL_UserEvtFlowStatus_t SVCCTL_App_Notification(void *p_Pckt)
              *            name prefix), and we remember its serial to persist once
              *            the link is up (auto-bind on first ever connect). */
             uint8_t accept = 0;
-            if (BleApplicationContext.EndDevice1Found == 0x00)
+            if (validAdv && BleApplicationContext.EndDevice1Found == 0x00)
             {
               if (FS_EngoBind_IsBound())
                 accept = ((foundUUID || foundName) &&

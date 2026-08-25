@@ -9,7 +9,7 @@ CFLAGS = -Wall -Wextra -std=c99 -g
 PYTHON = python3
 
 TESTS = test_time test_activelook test_flight_detect test_engo_bind test_hud_layout \
-        test_ble_diag test_activelook_fsm
+        test_ble_diag test_activelook_adv test_activelook_fsm
 
 all: $(TESTS)
 
@@ -43,6 +43,9 @@ test_hud_layout: test_hud_layout.c ../FlySight/hud_layout.c ../FlySight/hud_layo
 test_ble_diag: test_ble_diag.c ../FlySight/ble_diag.c ../FlySight/ble_diag.h
 	$(CC) $(CFLAGS) -I../FlySight -o test_ble_diag test_ble_diag.c ../FlySight/ble_diag.c
 
+test_activelook_adv: test_activelook_adv.c ../FlySight/activelook_adv.c ../FlySight/activelook_adv.h
+	$(CC) $(CFLAGS) -o test_activelook_adv test_activelook_adv.c ../FlySight/activelook_adv.c
+
 # The ENGO HUD state machine. Same copy-source-next-to-mocks trick as
 # test_engo_bind: activelook.c says #include "main.h"/"app_common.h"/"config.h"
 # etc., and quoted includes look in the includer's own directory first, so the
@@ -70,6 +73,7 @@ run: all
 	@echo "=== test_engo_bind ===";     ./test_engo_bind
 	@echo "=== test_hud_layout ===";   ./test_hud_layout
 	@echo "=== test_ble_diag ===";     ./test_ble_diag
+	@echo "=== test_activelook_adv ==="; ./test_activelook_adv
 	@echo "=== test_activelook_fsm ==="; ./test_activelook_fsm
 	@echo "=== test_flysight_ble ==="; $(PYTHON) test_flysight_ble.py
 	@echo "=== test_flysight_app ==="; $(PYTHON) test_flysight_app.py
