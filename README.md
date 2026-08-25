@@ -19,7 +19,8 @@ X A:87% F:76% N:21 v0.0.14     <- status: takeoff marker, glasses/FlySight
 
 Big digits (64–75 px), no labels, ~3 Hz refresh. Speeds are raw GPS ground
 speed / velD in km/h ("+" vertical = down) with no air-density (SAS)
-correction, so they match Skyderby's ground-speed charts. Details and layout
+correction, so they match the ground-speed charts used for track analysis.
+Details and layout
 coordinates: [Docs/HUD_LAYOUT.md](Docs/HUD_LAYOUT.md).
 
 Extra features over stock:
