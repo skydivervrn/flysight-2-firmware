@@ -66,7 +66,12 @@ static bool serial_valid(const char *s)
 void FS_EngoBind_Load(void)
 {
 	FIL  f;
-	char line[40];
+	/* Deliberately far wider than any form we accept — the longest documented
+	 * one, "ENGO 3 123456", is thirteen characters. That margin is what lets
+	 * "the buffer ran out" below mean "this is not a binding file" instead of
+	 * "we could not read all of a line that might have been fine". Narrow it
+	 * and legitimate long-form lines start getting thrown away. */
+	char line[64];
 
 	FRESULT fr;
 	char   *got;
@@ -106,6 +111,29 @@ void FS_EngoBind_Load(void)
 		s_bound = false;
 		s_serial[0] = '\0';
 		return;
+	}
+
+	/* Then prove we have a WHOLE line, which f_gets does not report either. It
+	 * stops at sizeof(line)-1 characters and returns cleanly, so a line longer
+	 * than the buffer arrives looking exactly like a short one — no error flag,
+	 * nothing missing to the naked eye, and the rest of it, including the real
+	 * serial in the long forms, still sitting on the card. Taking the last six
+	 * characters of that prefix is the read-fault bug all over again without the
+	 * fault: "AAAA…A123456" truncates to forty A's and binds the device to
+	 * "AAAAAA". Worse, it lands as VALID, so the self-heal path never runs and
+	 * no reboot ever undoes it.
+	 *
+	 * A line is whole if it ended with a newline, or if the file ended. Filling
+	 * sixty-three characters without either means the file is many times longer
+	 * than any binding we would ever write or accept, so calling it INVALID —
+	 * replaceable — is honest rather than destructive. */
+	if (got != NULL)
+	{
+		size_t len = strlen(line);
+		if (!(len > 0 && line[len - 1] == '\n') && !f_eof(&f))
+		{
+			got = NULL;                  /* buffer ran out: not a line we know */
+		}
 	}
 
 	if (got != NULL)

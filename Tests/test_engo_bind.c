@@ -415,6 +415,57 @@ int main(void)
 	CHECK(FS_EngoBind_IsBound() == true);
 	CHECK(strcmp(FS_EngoBind_Serial(), "123456") == 0);
 
+	/* ---------------------------------------------------------------------
+	 * 27-29. A line LONGER than the read buffer. No fault is involved: the
+	 * card is healthy, f_gets returns cleanly, f_error() stays clear. It
+	 * simply stops at 39 characters because that is all that fits, and the
+	 * remainder of the line — including the real serial, if the file uses one
+	 * of the long forms — is still on the card.
+	 *
+	 * Parsing that prefix is the same failure as a partial read, minus the
+	 * I/O error: the last six characters can be printable, pass
+	 * serial_valid(), and pin the device to something that is not a serial.
+	 * Worse than the read-fault case, because the result is ENGO_FILE_VALID,
+	 * so the self-heal path is never entered and no boot ever fixes it.
+	 * ------------------------------------------------------------------- */
+
+	/* 27. A line far past the buffer, ending in printable junk. Seventy 'A's
+	 *     and then the real serial: the buffer takes sixty-three 'A's, and
+	 *     "AAAAAA" is perfectly printable. */
+	set_file("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	         "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA123456\n");   /* 70 A's + serial */
+	card_healthy();
+	FS_EngoBind_Load();
+	CHECK(FS_EngoBind_IsBound() == false);          /* not "AAAAAA" */
+	CHECK(FS_EngoBind_Serial()[0] == '\0');
+
+	/*     …and a file that long is not a binding by any reading, so the device
+	 *     may replace it and recover rather than wedging. */
+	FS_EngoBind_NotePending("654321");
+	FS_EngoBind_CommitIfPending();
+	CHECK(FS_EngoBind_IsBound() == true);
+	CHECK(strcmp(g_fakeContent, "654321\n") == 0);
+
+	/* 28. A long-but-plausible line — well past the old 40-byte buffer, well
+	 *     inside the new one — must still bind. This is the case the first cut
+	 *     of the fix would have thrown away, and throwing it away means
+	 *     overwriting a binding the user meant. */
+	set_file("ENGO 3 the pair I keep in my helmet bag 123456\n");  /* 45 + nl */
+	card_healthy();
+	FS_EngoBind_Load();
+	CHECK(FS_EngoBind_IsBound() == true);
+	CHECK(strcmp(FS_EngoBind_Serial(), "123456") == 0);
+
+	/* 29. A short file with no trailing newline at all. The buffer is not
+	 *     exhausted, end-of-file is: this is a whole line and must still bind,
+	 *     or the fix above would break every file a text editor saved without
+	 *     a final newline. */
+	set_file("123456");
+	card_healthy();
+	FS_EngoBind_Load();
+	CHECK(FS_EngoBind_IsBound() == true);
+	CHECK(strcmp(FS_EngoBind_Serial(), "123456") == 0);
+
 	printf("engo_bind: %d/%d checks passed\n", g_checks - g_fail, g_checks);
 	return g_fail ? 1 : 0;
 }

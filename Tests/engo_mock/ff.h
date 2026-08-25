@@ -32,6 +32,10 @@ typedef struct { int writing; size_t rpos; int err; } FIL;
  * fault; this is the only thing that tells the two apart. */
 #define f_error(fp) ((fp)->err)
 
+/* Also from ff.h. Needed to tell "the line ended" from "the buffer ran out",
+ * which f_gets itself does not report. */
+#define f_eof(fp)   ((fp)->rpos >= g_fakeLen)
+
 FRESULT f_open(FIL *fp, const char *path, int mode);
 char   *f_gets(char *buff, int len, FIL *fp);
 FRESULT f_write(FIL *fp, const void *buff, UINT btw, UINT *bw);
