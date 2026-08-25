@@ -31,9 +31,9 @@ untouched device looks exactly as it did before.
 No text labels — values only. HSpd and VSpd share one row (HSpd viewer-left,
 VSpd viewer-right).
 
-Speeds are raw GPS on purpose (they match skyderby's ground-speed charts; the
-SAS air-density correction was removed from the HUD path — `Use_SAS` in
-CONFIG.TXT still governs the audio tones). VSpd is GNSS velD rather than a
+Speeds are raw GPS on purpose (they match the ground-speed charts used for track
+analysis; the SAS air-density correction was removed from the HUD path —
+`Use_SAS` in CONFIG.TXT still governs the audio tones). VSpd is GNSS velD rather than a
 barometric estimate: real-jump log analysis showed baro altitude noise of
 ~11 m stddev in freefall (aerodynamic pressure on the body), which made a
 baro-derived VSpd jump in 10-40 km/h steps, while velD stayed ~0.5 km/h stable.

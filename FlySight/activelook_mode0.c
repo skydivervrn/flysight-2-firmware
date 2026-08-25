@@ -105,9 +105,9 @@ typedef double (*LineValueFn_t)(const FS_GNSS_Data_t*);
 
 /* Simple "getter" functions for each known line type.
  * NB the HUD speed lines deliberately do NOT apply the SAS (air-density)
- * correction: user wants raw GPS telemetry matching skyderby's ground-speed
- * charts (decision 2026-07-22, from the 08-52-34 track analysis: HUD showed
- * 130 km/h SAS vs skyderby's 144 raw). Use_SAS in config still governs the
+ * correction: user wants raw GPS telemetry matching the ground-speed charts
+ * used for track analysis (decision 2026-07-22, from the 08-52-34 track
+ * analysis: HUD showed 130 km/h SAS against 144 raw). Use_SAS in config still governs the
  * audio tones (audio_control.c) — only the glasses HUD is raw. */
 static double LN_HSpeed(const FS_GNSS_Data_t *d) {
     return (double)d->gSpeed / 100.0; // cm/s to m/s, raw (no SAS)

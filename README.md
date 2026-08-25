@@ -21,8 +21,8 @@ Big digits (64–75 px), no labels, 4 Hz refresh — that is `AL_Rate: 250` (the
 interval in milliseconds) in `CONFIG.TXT`; raise it to 333 or 500 if the
 glasses ever stop refreshing mid-flight, 100 ms is the lowest the firmware
 accepts. Speeds are raw GPS ground speed / velD in km/h ("+" vertical = down)
-with no air-density (SAS) correction, so they match Skyderby's ground-speed
-charts. Details and layout coordinates:
+with no air-density (SAS) correction, so they match the ground-speed charts
+used for track analysis. Details and layout coordinates:
 [Docs/HUD_LAYOUT.md](Docs/HUD_LAYOUT.md).
 
 Extra features over stock:
