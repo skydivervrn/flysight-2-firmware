@@ -567,8 +567,13 @@ static void speakValue(
 		 * "whole units, no subdivision" — which is what no decimals means
 		 * everywhere else — and use that same multiplier on BOTH sides of the
 		 * calculation. Fixing only the divisor left the announcement itself
-		 * multiplied by zero, so every altitude callout said "zero". */
-		const uint8_t steps = config->speech[cur_speech].decimals
+		 * multiplied by zero, so every altitude callout said "zero".
+		 *
+		 * int32_t, not uint8_t, and "> 0" rather than "!= 0": narrowing turns
+		 * Sp_Dec 256 back into a zero step, which is this bug again. The
+		 * parser clamps Sp_Dec to 0..3 on this branch, so nothing can reach
+		 * that today — the type is right on its own terms, not by luck. */
+		const int32_t steps = (config->speech[cur_speech].decimals > 0)
 				? config->speech[cur_speech].decimals : 1;
 
 		step_size = ((config->speech[cur_speech].units == FS_CONFIG_UNITS_METERS)
