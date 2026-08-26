@@ -9,7 +9,7 @@ CFLAGS = -Wall -Wextra -std=c99 -g
 PYTHON = python3
 
 TESTS = test_time test_activelook test_flight_detect test_engo_bind test_hud_layout \
-        test_ble_diag test_activelook_adv test_activelook_fsm
+        test_ble_diag test_activelook_adv test_activelook_fsm test_crs
 
 all: $(TESTS)
 
@@ -66,6 +66,13 @@ test_activelook_fsm: test_activelook_fsm.c ../FlySight/activelook.c ../FlySight/
 	$(CC) $(CFLAGS) -o test_activelook_fsm build_al_fsm/test_activelook_fsm.c \
 	   build_al_fsm/activelook.c build_al_fsm/activelook_proto.c
 
+# Compile the real CRS state machine beside host-only definitions of its
+# FatFs, BLE queue, scheduler, timer and resource-manager dependencies.
+test_crs: test_crs.c crs_mock/crs_mock.h ../FlySight/crs.c ../FlySight/crs.h
+	rm -rf build_crs && mkdir build_crs
+	cp test_crs.c ../FlySight/crs.c ../FlySight/crs.h crs_mock/*.h build_crs/
+	$(CC) $(CFLAGS) -Ibuild_crs -o test_crs build_crs/test_crs.c build_crs/crs.c
+
 run: all
 	@echo "=== test_time ===";          ./test_time
 	@echo "=== test_activelook ===";    ./test_activelook
@@ -75,11 +82,12 @@ run: all
 	@echo "=== test_ble_diag ===";     ./test_ble_diag
 	@echo "=== test_activelook_adv ==="; ./test_activelook_adv
 	@echo "=== test_activelook_fsm ==="; ./test_activelook_fsm
+	@echo "=== test_crs ===";           ./test_crs
 	@echo "=== test_flysight_ble ==="; $(PYTHON) test_flysight_ble.py
 	@echo "=== test_flysight_app ==="; $(PYTHON) test_flysight_app.py
 
 clean:
 	rm -f $(TESTS)
-	rm -rf build_engo_bind build_al_fsm $(addsuffix .dSYM,$(TESTS)) __pycache__
+	rm -rf build_engo_bind build_al_fsm build_crs $(addsuffix .dSYM,$(TESTS)) __pycache__
 
 .PHONY: all run clean
