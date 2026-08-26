@@ -52,7 +52,7 @@
  * Then the string on the glasses says exactly which build is running — the
  * whole point of this marker (Firmware_Ver in flysight.txt is unreliable). */
 #ifndef HUD_VERSION
-#define HUD_VERSION "0.0.28-diag"
+#define HUD_VERSION "0.0.29-diag"
 #endif
 
 /* Fonts VERIFIED on ENGO 3 (this unit) via Mac BLE bench 2026-07-20 — fontList
@@ -575,9 +575,16 @@ void FS_ActiveLook_Mode0_Update(void)
 
         const AL_Mode0_LineMap_t *entry = FindLineMapEntry(el->field);
 
+        /* A GPS-derived value needs a fix AND a receiver that is still
+         * talking. gpsFix only records what was true when the last sample
+         * arrived: if the module, the UART or the message pairing stalls, the
+         * whole struct keeps its values and its fix flag, and the HUD would go
+         * on showing a speed and a glide from some minutes ago as though they
+         * were now. Dashes are honest; a stale number is not. */
         if (entry == NULL ||
-            (FS_HudLayout_FieldNeedsFix(el->field) && gnss->gpsFix != 3)) {
-            /* Unknown field, or a GPS-derived one with no 3D fix yet. */
+            (FS_HudLayout_FieldNeedsFix(el->field) &&
+             (gnss->gpsFix != 3 || FS_GNSS_IsStale()))) {
+            /* Unknown field, no 3D fix yet, or nothing fresh to draw. */
             snprintf(text[i], AL_MODE0_MAX_TEXT, "----");
             continue;
         }

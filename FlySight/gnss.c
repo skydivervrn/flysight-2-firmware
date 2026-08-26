@@ -637,6 +637,30 @@ static void FS_GNSS_SendMessage(uint8_t msgClass, uint8_t msgId, uint16_t size, 
 	FS_GNSS_PutChar(ckB);
 }
 
+static uint32_t gnssLastCompleteTick;
+static uint8_t  gnssEverComplete;
+
+/* How old a complete sample may be before nothing should be read from it.
+ *
+ * The receiver is configured for 5 Hz, so a sample is due every 200 ms. Two
+ * seconds is ten missed ones: past any plausible jitter, and short enough that
+ * a wingsuit at 40 m/s has moved 80 m — which is exactly why a HUD must not go
+ * on showing the last number as though it were current. */
+#define GNSS_STALE_MS 2000u
+
+/* Milliseconds since the last complete sample, or GNSS_STALE_MS if none has
+ * ever arrived. */
+uint32_t FS_GNSS_MsSinceUpdate(void)
+{
+	if (!gnssEverComplete) return GNSS_STALE_MS;
+	return HAL_GetTick() - gnssLastCompleteTick;
+}
+
+bool FS_GNSS_IsStale(void)
+{
+	return FS_GNSS_MsSinceUpdate() >= GNSS_STALE_MS;
+}
+
 static void FS_GNSS_ReceiveMessage(uint8_t msgReceived, uint32_t timeOfWeek)
 {
 	if (timeOfWeek != gnssTimeOfWeek)
@@ -650,6 +674,11 @@ static void FS_GNSS_ReceiveMessage(uint8_t msgReceived, uint32_t timeOfWeek)
 	if (gnssMsgReceived == UBX_MSG_ALL)
 	{
 		gnssData.iTOW = timeOfWeek;
+		/* Stamped only when a COMPLETE sample lands — every field in gnssData
+		 * belongs to this instant, and nothing downstream can otherwise tell a
+		 * live reading from the last one before the receiver went quiet. */
+		gnssLastCompleteTick = HAL_GetTick();
+		gnssEverComplete = 1;
 		if (data_ready_callback)
 		{
 			data_ready_callback();

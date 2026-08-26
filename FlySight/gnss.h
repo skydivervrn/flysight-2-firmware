@@ -87,6 +87,19 @@ void FS_GNSS_Start(void);
 void FS_GNSS_Stop(void);
 
 const FS_GNSS_Data_t *FS_GNSS_GetData(void);
+
+/* Age of the newest COMPLETE GNSS sample, in milliseconds.
+ *
+ * `gpsFix` says whether the receiver had a solution when it last spoke; it
+ * says nothing about whether it is still speaking. A module, a UART or the
+ * message pairing can stall silently, and every reading in FS_GNSS_Data_t then
+ * keeps its last value with its fix flag intact — a HUD frozen on a number
+ * that was true some minutes ago, and audio still calling it out. */
+uint32_t FS_GNSS_MsSinceUpdate(void);
+
+/* True when the newest complete sample is too old to act on, or when none has
+ * arrived since boot. */
+bool FS_GNSS_IsStale(void);
 void FS_GNSS_DataReady_SetCallback(void (*callback)(void));
 
 void FS_GNSS_Timepulse(void);
