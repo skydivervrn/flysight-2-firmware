@@ -54,6 +54,7 @@ static uint8_t led_timer_id;
 #define HEALTH_TIMER_TICKS  (HEALTH_TIMER_MSEC*1000/CFG_TS_TICK_VAL)
 static uint8_t health_timer_id;
 static bool gnssWasStale;
+static bool gnssHadFix;
 
 static volatile bool hasFix;
 static volatile bool rtcUpdated;
@@ -79,19 +80,49 @@ void FS_ActiveControl_RawReady_Callback(void);
  * are connected misses exactly the case worth recording. */
 static void FS_ActiveControl_Health_Timer(void)
 {
+	const FS_GNSS_Data_t *data = FS_GNSS_GetData();
 	const bool stale = FS_GNSS_IsStale();
+	const bool hasFix3D = (data->gpsFix == 3) && !stale;
+
+	/* Two different failures, and they are worth telling apart in the log.
+	 *
+	 * "No fix" is the receiver talking and saying it cannot see enough sky:
+	 * a metal box, a building, a bad patch under canopy. Samples keep
+	 * arriving; the HUD shows dashes because the values are meaningless, not
+	 * because they are missing.
+	 *
+	 * "Stale" is the receiver not talking at all — a stalled module, a dead
+	 * UART, message pairing that came apart. Nothing arrives, and the last
+	 * values would otherwise sit there looking current.
+	 *
+	 * Until now only the second had a line, and the first — the one that
+	 * happens on every jump into a hangar door — left no trace at all. */
+	if (hasFix3D != gnssHadFix)
+	{
+		gnssHadFix = hasFix3D;
+		if (hasFix3D)
+		{
+			FS_Log_WriteEventAsync("GNSS fix acquired: numSV=%u, hAcc=%lu mm",
+					(unsigned)data->numSV, (unsigned long)data->hAcc);
+		}
+		else if (!stale)
+		{
+			FS_Log_WriteEventAsync("GNSS fix lost: gpsFix=%u, numSV=%u",
+					(unsigned)data->gpsFix, (unsigned)data->numSV);
+		}
+	}
 
 	if (stale == gnssWasStale) return;
 
 	gnssWasStale = stale;
 	if (stale)
 	{
-		FS_Log_WriteEventAsync("GNSS stale: no complete sample for %lu ms",
+		FS_Log_WriteEventAsync("GNSS silent: no complete sample for %lu ms",
 				(unsigned long)FS_GNSS_MsSinceUpdate());
 	}
 	else
 	{
-		FS_Log_WriteEventAsync("GNSS fresh again");
+		FS_Log_WriteEventAsync("GNSS talking again");
 	}
 }
 
@@ -119,10 +150,13 @@ void FS_ActiveControl_Init(void)
 	// Initialize LED timer
 	HW_TS_Create(CFG_TIM_PROC_ID_ISR, &led_timer_id, hw_ts_SingleShot, FS_ActiveControl_LED_Timer);
 
-	/* Initialize the GNSS freshness watchdog. It starts "fresh" so the first
-	 * transition logged is a real one rather than the receiver's cold start,
-	 * which every session has and nobody needs a line about. */
-	gnssWasStale = false;
+	/* Seeded to what is actually true at power-on — no samples yet, no fix —
+	 * so the first lines in the log are the receiver waking up rather than a
+	 * transition that never happened. Anything else produced a lone "fresh
+	 * again" with no partner, because the first tick lands before logging is
+	 * ready and its line is dropped. */
+	gnssWasStale = true;
+	gnssHadFix = false;
 	HW_TS_Create(CFG_TIM_PROC_ID_ISR, &health_timer_id, hw_ts_Repeated, FS_ActiveControl_Health_Timer);
 	HW_TS_Start(health_timer_id, HEALTH_TIMER_TICKS);
 
