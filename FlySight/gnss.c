@@ -637,8 +637,13 @@ static void FS_GNSS_SendMessage(uint8_t msgClass, uint8_t msgId, uint16_t size, 
 	FS_GNSS_PutChar(ckB);
 }
 
-static uint32_t gnssLastCompleteTick;
-static uint8_t  gnssEverComplete;
+/* Written where GNSS messages are parsed, read from the HUD and audio tasks.
+ * A 32-bit aligned load is single-instruction on this core, so there is no
+ * torn read to guard against; volatile is here so the compiler cannot hoist
+ * the load out of a caller's loop and answer with an age that stopped
+ * advancing. */
+static volatile uint32_t gnssLastCompleteTick;
+static volatile uint8_t  gnssEverComplete;
 
 /* How old a complete sample may be before nothing should be read from it.
  *
