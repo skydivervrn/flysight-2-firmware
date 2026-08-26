@@ -182,6 +182,11 @@ static void bring_up_link(void)
 	pump();
 }
 
+/* Storage for the GNSS mock in al_mock/gnss.h. The FSM only reads these; a
+ * test that wants the stale branch sets them. */
+bool g_mockGnssStale = false;
+uint32_t g_mockGnssAgeMs = 0;
+
 int main(void)
 {
 	/* ------------------------------------------------------------------

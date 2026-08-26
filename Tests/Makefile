@@ -54,7 +54,7 @@ test_activelook_adv: test_activelook_adv.c ../FlySight/activelook_adv.c ../FlySi
 # exactly what drives the FSM, so the FSM under test is the real one.
 AL_FSM_MOCKS = al_mock/main.h al_mock/app_common.h al_mock/stm32_seq.h \
                al_mock/dbg_trace.h al_mock/log.h al_mock/config.h \
-               al_mock/activelook_client.h al_mock/ble_diag.h
+               al_mock/activelook_client.h al_mock/ble_diag.h al_mock/gnss.h
 
 test_activelook_fsm: test_activelook_fsm.c ../FlySight/activelook.c ../FlySight/activelook.h \
                      ../FlySight/activelook_mode0.h ../FlySight/activelook_proto.c \
