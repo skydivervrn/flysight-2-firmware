@@ -756,7 +756,12 @@ FS_Config_Result_t FS_Config_Read(const char *filename)
 
 	f_close(&configFile);
 
-	if (readFailed) return FS_CONFIG_ERR;
+	/* Deliberately NOT FS_CONFIG_ERR: callers answer that by writing the
+	 * default file over the top, which is right when there is no usable
+	 * configuration and catastrophic when the card merely stumbled while
+	 * reading a perfectly good one. A card that fails once takes the user's
+	 * alarm altitudes, units and HUD layout with it. */
+	if (readFailed) return FS_CONFIG_ERR_IO;
 
 	/* A hand-edited file can name any number at all; fold it into range once,
 	 * here, so nothing downstream has to. */

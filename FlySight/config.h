@@ -181,7 +181,8 @@ typedef struct
 
 typedef enum {
 	FS_CONFIG_OK = 0,
-	FS_CONFIG_ERR
+	FS_CONFIG_ERR,      /* no usable configuration file — write a default */
+	FS_CONFIG_ERR_IO    /* the file is there but the card failed mid-read */
 } FS_Config_Result_t;
 
 void FS_Config_Init(void);

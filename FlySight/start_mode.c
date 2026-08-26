@@ -47,7 +47,11 @@ void FS_StartMode_Init(void)
 
 	/* Initialize configuration */
 	FS_Config_Init();
-	if (FS_Config_Read("/config.txt") != FS_CONFIG_OK)
+	/* Only a MISSING or unreadable-from-the-start file earns a default one.
+	 * FS_CONFIG_ERR_IO means the file exists and the card failed part way
+	 * through it; overwriting then would throw away a configuration that is
+	 * probably fine, on the strength of one bad read. */
+	if (FS_Config_Read("/config.txt") == FS_CONFIG_ERR)
 	{
 		FS_Config_Write("/config.txt");
 	}
