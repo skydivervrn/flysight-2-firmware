@@ -1,6 +1,7 @@
 #include "main.h"
 #include "activelook.h"
 #include "activelook_client.h"
+#include "gnss.h"
 #include "ble_diag.h"
 #include "activelook_mode0.h"
 #include "activelook_proto.h"
@@ -323,6 +324,37 @@ static void FS_ActiveLook_Task(void)
         break;
 
     case AL_STATE_UPDATE:
+        /* Whether the receiver is still talking, logged on the transitions
+         * only. This is what the dashes on the glasses mean, and without a
+         * line here a flight log shows nothing at all for a stall: the HUD
+         * quietly switches to "----" and back and leaves no trace to read
+         * afterwards.
+         *
+         * Evaluated on this tick because it is the one that keeps running
+         * when GNSS stops — every other periodic path in ACTIVE is driven by
+         * the arrival of a sample. It therefore only reports while the
+         * glasses are connected; a stall with no glasses on is invisible, and
+         * that is a limitation rather than a design. */
+        {
+            static bool s_gnssWasStale = false;
+            const bool stale = FS_GNSS_IsStale();
+
+            if (stale != s_gnssWasStale)
+            {
+                s_gnssWasStale = stale;
+                if (stale)
+                {
+                    FS_Log_WriteEventAsync(
+                        "GNSS stale: no complete sample for %lu ms — HUD shows dashes",
+                        (unsigned long)FS_GNSS_MsSinceUpdate());
+                }
+                else
+                {
+                    FS_Log_WriteEventAsync("GNSS fresh again");
+                }
+            }
+        }
+
         /* Self-heal watchdogs (glidex + official-SDK-informed). A wedged glasses
          * link shows up as either STOP asserted forever (buffer never drains, or
          * the resume notification was lost) or writes failing back-to-back. In

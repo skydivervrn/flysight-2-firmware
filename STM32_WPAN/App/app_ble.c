@@ -755,6 +755,15 @@ connection_complete_common:
             BleApplicationContext.connectionHandleEndDevice1 = connection_handle;
             if (FS_ActiveLook_IsRunning())
             {
+              /* Timestamped in EVENT.CSV so the eleven seconds between "ENGO
+               * found" and "ENGO link ready" can be split into the part spent
+               * establishing the connection and the part spent discovering.
+               * The discovery watchdog covers only the second half, and
+               * without this line there is no way to know how close it runs
+               * to its limit. */
+              FS_Log_WriteEventAsync("ENGO connected: handle 0x%04X, discovering",
+                  (unsigned)connection_handle);
+
               /* Arm the setup watchdog before discovery starts, so a sequence
                * that never completes cannot hold the glasses' only central
                * slot indefinitely. */
