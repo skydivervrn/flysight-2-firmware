@@ -663,12 +663,43 @@ SVCCTL_UserEvtFlowStatus_t SVCCTL_App_Notification(void *p_Pckt)
           }
 #endif
 
+          if (p_enhanced_connection_complete_event->Status != BLE_STATUS_SUCCESS)
+          {
+            if (role == 0x00)
+            {
+              APP_DBG_MSG("-- CONNECTION WITH END DEVICE 1 FAILED: 0x%02X\n\r",
+                          p_enhanced_connection_complete_event->Status);
+              FS_Log_WriteEventAsync("ENGO GATT setup failed: connection complete 0x%02X",
+                  (unsigned)p_enhanced_connection_complete_event->Status);
+
+              /* A failed connection-complete has no usable handle and does not
+               * produce a disconnection-complete event. Keep the required
+               * ForceDisconnect call (a safe no-op with the invalid client
+               * handle), then perform the same cleanup and rescan explicitly. */
+              FS_ActiveLook_Client_ForceDisconnect();
+              BleApplicationContext.EndDevice_Connection_Status[0] = APP_BLE_IDLE;
+              BleApplicationContext.connectionHandleEndDevice1 = 0xFFFF;
+              FS_ActiveLook_Client_OnDisconnect();
+              FS_ActiveLook_OnDisconnect();
+              UTIL_SEQ_SetTask(1 << CFG_TASK_START_SCAN_ID, CFG_SCH_PRIO_0);
+            }
+            else
+            {
+              APP_DBG_MSG("-- CONNECTION WITH SMART PHONE FAILED: 0x%02X\n\r",
+                          p_enhanced_connection_complete_event->Status);
+              BleApplicationContext.SmartPhone_Connection_Status = APP_BLE_IDLE;
+              BleApplicationContext.connectionHandleCentral = 0xFFFF;
+            }
+            break;
+          }
+
           if (role == 0x00)
           { /* ROLE CENTRAL */
-        	  APP_DBG_MSG("-- CONNECTION SUCCESS WITH END DEVICE 1\n\r");
-        	  BleApplicationContext.EndDevice_Connection_Status[0] = APP_BLE_CONNECTED;
-        	  BleApplicationContext.connectionHandleEndDevice1 = connection_handle;
-        	  FS_ActiveLook_Client_StartDiscovery(connection_handle);
+            APP_DBG_MSG("-- CONNECTION SUCCESS WITH END DEVICE 1\n\r");
+            BleApplicationContext.EndDevice_Connection_Status[0] = APP_BLE_CONNECTED;
+            BleApplicationContext.connectionHandleEndDevice1 = connection_handle;
+            FS_ActiveLook_OnDiscoveryStart();
+            FS_ActiveLook_Client_StartDiscovery(connection_handle);
           }
           else
           {

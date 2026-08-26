@@ -27,6 +27,12 @@ typedef enum
 static FS_ActiveLook_State_t s_state = AL_STATE_INIT;
 
 static uint8_t timer_id;
+static volatile uint8_t s_discoveryInProgress;
+static volatile uint8_t s_discoveryTimedOut;
+
+#define FS_ACTIVELOOK_DISCOVERY_TIMEOUT_MS 10000u
+#define FS_ACTIVELOOK_DISCOVERY_TIMEOUT_TICKS \
+    (FS_ACTIVELOOK_DISCOVERY_TIMEOUT_MS * 1000u / CFG_TS_TICK_VAL)
 
 typedef struct {
     /**
@@ -92,6 +98,11 @@ static void OnActiveLookDiscoveryComplete(void)
 {
     APP_DBG_MSG("ActiveLook: Discovery complete\n");
 
+    /* The shared timer becomes the periodic display timer after setup. */
+    s_discoveryInProgress = 0;
+    s_discoveryTimedOut = 0;
+    HW_TS_Stop(timer_id);
+
     FS_Log_WriteEventAsync("ENGO link ready (MTU %u)",
                            (unsigned)FS_ActiveLook_Client_GetMTU());
 
@@ -118,6 +129,18 @@ static void OnActiveLookDiscoveryComplete(void)
 static void FS_ActiveLook_Task(void)
 {
     char tmp[32];
+
+    if (s_discoveryTimedOut)
+    {
+        /* The timer callback runs in timer-server context; logging and the HCI
+         * terminate command belong here in the sequencer task. */
+        s_discoveryTimedOut = 0;
+        s_discoveryInProgress = 0;
+        HW_TS_Stop(timer_id);
+        FS_Log_WriteEventAsync("ENGO GATT setup failed: discovery timeout 10s");
+        FS_ActiveLook_Client_ForceDisconnect();
+        return;
+    }
 
     switch (s_state)
     {
@@ -331,12 +354,30 @@ static void FS_ActiveLook_Task(void)
 
 static void FS_ActiveLook_Timer(void)
 {
-    if (s_state == AL_STATE_READY)
+    if (s_discoveryInProgress)
+    {
+        s_discoveryTimedOut = 1;
+        UTIL_SEQ_SetTask(1 << CFG_TASK_FS_ACTIVELOOK_ID, CFG_SCH_PRIO_0);
+    }
+    else if (s_state == AL_STATE_READY)
     {
 		/* Update the page */
 		s_state = AL_STATE_UPDATE;
 		UTIL_SEQ_SetTask(1 << CFG_TASK_FS_ACTIVELOOK_ID, CFG_SCH_PRIO_0);
     }
+}
+
+/*******************************************************************************
+ * Arm the setup watchdog when the central link to the glasses succeeds. The
+ * existing repeated timer is stopped on discovery completion and then reused
+ * at the configured display-update period, so this consumes no extra timer ID.
+ ******************************************************************************/
+void FS_ActiveLook_OnDiscoveryStart(void)
+{
+    s_discoveryTimedOut = 0;
+    s_discoveryInProgress = 1;
+    HW_TS_Stop(timer_id);
+    HW_TS_Start(timer_id, FS_ACTIVELOOK_DISCOVERY_TIMEOUT_TICKS);
 }
 
 /*******************************************************************************
@@ -381,6 +422,8 @@ void FS_ActiveLook_OnDisconnect(void)
 
     /* Stop the periodic update timer (safe to call even when not running) */
     HW_TS_Stop(timer_id);
+    s_discoveryInProgress = 0;
+    s_discoveryTimedOut = 0;
 
     /* Reset FSM to disconnected/idle — OnActiveLookDiscoveryComplete will
      * restart it cleanly when the glasses reconnect. */
@@ -416,6 +459,8 @@ void FS_ActiveLook_Init(void)
 
     /* Start in the INIT state */
     s_state = AL_STATE_INIT;
+    s_discoveryInProgress = 0;
+    s_discoveryTimedOut = 0;
 
     /* If we want to automatically scan/connect: */
     UTIL_SEQ_SetTask(1 << CFG_TASK_START_SCAN_ID, CFG_SCH_PRIO_0);
@@ -428,6 +473,8 @@ void FS_ActiveLook_DeInit(void)
 {
 	/* Reset state */
 	s_state = AL_STATE_INIT;
+	s_discoveryInProgress = 0;
+	s_discoveryTimedOut = 0;
 
 	/* Delete update timer */
 	HW_TS_Delete(timer_id);

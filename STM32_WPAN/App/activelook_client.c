@@ -163,6 +163,39 @@ typedef struct
 
 static FS_ActiveLook_Client_Context_t g_ctx;
 
+static void FS_ActiveLook_Client_SetupStatusFailed(const char *step,
+                                                   uint8_t status)
+{
+    FS_Log_WriteEventAsync("ENGO GATT setup failed: %s 0x%02X",
+                           step, (unsigned)status);
+    APP_DBG_MSG("ActiveLook_Client: %s failed: 0x%02X -- dropping link\n",
+                step, status);
+    g_ctx.discState = DISC_STATE_IDLE;
+    FS_ActiveLook_Client_ForceDisconnect();
+}
+
+static void FS_ActiveLook_Client_SetupProcedureFailed(DiscoveryState_t state,
+                                                      uint8_t error)
+{
+    FS_Log_WriteEventAsync(
+        "ENGO GATT setup failed: proc state %u err 0x%02X",
+        (unsigned)state, (unsigned)error);
+    APP_DBG_MSG("ActiveLook_Client: procedure state %u failed: 0x%02X -- dropping link\n",
+                (unsigned)state, error);
+    g_ctx.discState = DISC_STATE_IDLE;
+    FS_ActiveLook_Client_ForceDisconnect();
+}
+
+static void FS_ActiveLook_Client_SetupFlowControlFailed(uint8_t error)
+{
+    FS_Log_WriteEventAsync(
+        "ENGO GATT setup failed: no CB9 flow control (started=%u err=0x%02X)",
+        (unsigned)g_ctx.ctrlSubscribeStarted, (unsigned)error);
+    APP_DBG_MSG("ActiveLook_Client: no CB9 subscription -- dropping link\n");
+    g_ctx.discState = DISC_STATE_IDLE;
+    FS_ActiveLook_Client_ForceDisconnect();
+}
+
 /******************************************************************************
  * Initialize
  ******************************************************************************/
@@ -170,6 +203,7 @@ void FS_ActiveLook_Client_Init(void)
 {
     memset(&g_ctx, 0, sizeof(g_ctx));
     g_ctx.discState      = DISC_STATE_IDLE;
+    g_ctx.connHandle     = 0xFFFF;  /* invalid / no connection */
     g_ctx.negotiatedMTU  = 23;  /* BLE default ATT_MTU */
     g_ctx.lastBatteryPercent = 255;  /* 255 = unknown */
 }
@@ -233,9 +267,7 @@ void FS_ActiveLook_Client_StartDiscovery(uint16_t connectionHandle)
     }
     else
     {
-        APP_DBG_MSG("ActiveLook_Client: aci_gatt_exchange_config fail=0x%02X\n", s);
-        FS_Log_WriteEventAsync("ENGO GATT setup failed: MTU req 0x%02X", s);
-        g_ctx.discState = DISC_STATE_IDLE;  // stop
+        FS_ActiveLook_Client_SetupStatusFailed("MTU request", s);
     }
 }
 
@@ -276,6 +308,25 @@ void FS_ActiveLook_Client_EventHandler(void *p_blecore_evt, uint8_t hci_event_ev
             if (pc->Connection_Handle != g_ctx.connHandle)
                 break; /* Not for us */
 
+            /* Ignore late completions after a failure has already initiated
+             * disconnect. Otherwise one failed procedure can produce multiple
+             * EVENT.CSV entries while the termination command is in flight. */
+            if (g_ctx.discState == DISC_STATE_IDLE)
+                break;
+
+            /* Only a successful procedure may advance discovery. Keep the
+             * existing, more specific CB9 diagnostic for the required
+             * flow-control subscription. */
+            if (pc->Error_Code != BLE_STATUS_SUCCESS)
+            {
+                if (g_ctx.discState == DISC_STATE_CTRL_NOTIFY_WRITE)
+                    FS_ActiveLook_Client_SetupFlowControlFailed(pc->Error_Code);
+                else
+                    FS_ActiveLook_Client_SetupProcedureFailed(g_ctx.discState,
+                                                              pc->Error_Code);
+                return;
+            }
+
             if (g_ctx.discState == DISC_STATE_EXCH_MTU)
             {
                 /* Done exchanging MTU => discover all primary services */
@@ -287,9 +338,8 @@ void FS_ActiveLook_Client_EventHandler(void *p_blecore_evt, uint8_t hci_event_ev
                 }
                 else
                 {
-                    APP_DBG_MSG("ActiveLook_Client: disc_all_primary_services fail=0x%02X\n", s);
-                    FS_Log_WriteEventAsync("ENGO GATT setup failed: svc disc 0x%02X", s);
-                    g_ctx.discState = DISC_STATE_IDLE;
+                    FS_ActiveLook_Client_SetupStatusFailed("service discovery", s);
+                    return;
                 }
             }
             else if (g_ctx.discState == DISC_STATE_SVC_IN_PROGRESS)
@@ -309,34 +359,17 @@ void FS_ActiveLook_Client_EventHandler(void *p_blecore_evt, uint8_t hci_event_ev
                     }
                     else
                     {
-                        APP_DBG_MSG("ActiveLook_Client: disc_all_char_of_service fail=0x%02X\n", s);
-                        FS_Log_WriteEventAsync("ENGO GATT setup failed: char disc 0x%02X", s);
-                        g_ctx.discState = DISC_STATE_IDLE;
-                    }
-                }
-                else if (g_ctx.batteryServiceFound)
-                {
-                    g_ctx.discState    = DISC_STATE_CHAR_IN_PROGRESS;
-                    g_ctx.whichService = SERVICE_BATTERY;
-                    tBleStatus s = aci_gatt_disc_all_char_of_service(
-                                       g_ctx.connHandle,
-                                       g_ctx.batteryServiceStartHandle,
-                                       g_ctx.batteryServiceEndHandle);
-                    if (s == BLE_STATUS_SUCCESS)
-                    {
-                        APP_DBG_MSG("ActiveLook_Client: No AL service, but battery found; discovering battery char...\n");
-                    }
-                    else
-                    {
-                        APP_DBG_MSG("ActiveLook_Client: disc_all_char_of_service(battery) fail=0x%02X\n", s);
-                        g_ctx.discState = DISC_STATE_IDLE;
+                        FS_ActiveLook_Client_SetupStatusFailed(
+                            "ActiveLook characteristic discovery", s);
+                        return;
                     }
                 }
                 else
                 {
-                    APP_DBG_MSG("ActiveLook_Client: No known services found.\n");
                     FS_Log_WriteEventAsync("ENGO GATT setup failed: ActiveLook service not found");
                     g_ctx.discState = DISC_STATE_IDLE;
+                    FS_ActiveLook_Client_ForceDisconnect();
+                    return;
                 }
             }
             else if (g_ctx.discState == DISC_STATE_CHAR_IN_PROGRESS)
@@ -344,6 +377,21 @@ void FS_ActiveLook_Client_EventHandler(void *p_blecore_evt, uint8_t hci_event_ev
                 /* Done discovering chars for whichever service we were on. */
                 if (g_ctx.whichService == SERVICE_ACTIVELOOK)
                 {
+                    if (!g_ctx.rxCharFound || (g_ctx.rxCharHandle == 0))
+                    {
+                        FS_Log_WriteEventAsync(
+                            "ENGO GATT setup failed: RX characteristic not found");
+                        g_ctx.discState = DISC_STATE_IDLE;
+                        FS_ActiveLook_Client_ForceDisconnect();
+                        return;
+                    }
+
+                    if (!g_ctx.ctrlCharFound || (g_ctx.ctrlCharHandle == 0))
+                    {
+                        FS_ActiveLook_Client_SetupFlowControlFailed(0);
+                        return;
+                    }
+
                     /* If battery service also found, discover battery chars now */
                     if (g_ctx.batteryServiceFound)
                     {
@@ -359,7 +407,9 @@ void FS_ActiveLook_Client_EventHandler(void *p_blecore_evt, uint8_t hci_event_ev
                         }
                         else
                         {
-                            APP_DBG_MSG("ActiveLook_Client: disc_all_char_of_service(battery) fail=0x%02X\n", s);
+                            FS_ActiveLook_Client_SetupStatusFailed(
+                                "battery characteristic discovery", s);
+                            return;
                         }
                     }
                 }
@@ -381,11 +431,12 @@ void FS_ActiveLook_Client_EventHandler(void *p_blecore_evt, uint8_t hci_event_ev
                         APP_DBG_MSG("ActiveLook_Client: Discovering battery descriptors...\n");
                         return;
                     }
-                    APP_DBG_MSG("ActiveLook_Client: disc_all_char_desc(battery) fail=0x%02X\n", s);
-                    g_ctx.discState = DISC_STATE_CHAR_IN_PROGRESS; /* fall through below */
+                    FS_ActiveLook_Client_SetupStatusFailed(
+                        "battery descriptor discovery", s);
+                    return;
                 }
 
-                /* No battery, or battery desc discovery failed — jump to TX desc step. */
+                /* No battery descriptors to process — jump to TX desc step. */
                 if (g_ctx.txCharFound && (g_ctx.txCharHandle != 0))
                 {
                     g_ctx.discState = DISC_STATE_TX_DESC_IN_PROGRESS;
@@ -398,10 +449,12 @@ void FS_ActiveLook_Client_EventHandler(void *p_blecore_evt, uint8_t hci_event_ev
                         APP_DBG_MSG("ActiveLook_Client: Discovering TX descriptors...\n");
                         return;
                     }
-                    APP_DBG_MSG("ActiveLook_Client: disc_all_char_desc(tx) fail=0x%02X\n", s);
+                    FS_ActiveLook_Client_SetupStatusFailed(
+                        "TX descriptor discovery", s);
+                    return;
                 }
 
-                /* No TX, or TX desc discovery failed — jump to Ctrl desc step. */
+                /* No TX descriptors to process — jump to Ctrl desc step. */
                 if (g_ctx.ctrlCharFound && (g_ctx.ctrlCharHandle != 0))
                 {
                     g_ctx.discState = DISC_STATE_CTRL_DESC_IN_PROGRESS;
@@ -414,17 +467,16 @@ void FS_ActiveLook_Client_EventHandler(void *p_blecore_evt, uint8_t hci_event_ev
                         APP_DBG_MSG("ActiveLook_Client: Discovering Ctrl descriptors...\n");
                         return;
                     }
-                    APP_DBG_MSG("ActiveLook_Client: disc_all_char_desc(ctrl) fail=0x%02X\n", s);
+                    FS_ActiveLook_Client_SetupStatusFailed(
+                        "CB9 descriptor discovery", s);
+                    return;
                 }
 
-                /* Nothing to discover — complete now. */
-                g_ctx.discState = DISC_STATE_IDLE;
-                g_ctx.linkUp    = true;
-                APP_DBG_MSG("ActiveLook_Client: Discovery complete (no CCCDs to write).\n");
-                if (g_ctx.rxCharFound && g_ctx.cb && g_ctx.cb->OnDiscoveryComplete)
-                {
-                    g_ctx.cb->OnDiscoveryComplete();
-                }
+                /* A required CB9 characteristic always enters descriptor
+                 * discovery above. Reaching this path means flow control could
+                 * not be subscribed, so preserve the existing no-link-up rule. */
+                FS_ActiveLook_Client_SetupFlowControlFailed(0);
+                return;
             }
             else if (g_ctx.discState == DISC_STATE_DESC_IN_PROGRESS)
             {
@@ -440,9 +492,11 @@ void FS_ActiveLook_Client_EventHandler(void *p_blecore_evt, uint8_t hci_event_ev
                         g_ctx.discState = DISC_STATE_BATTERY_NOTIFY_WRITE;
                         return;
                     }
+                    FS_ActiveLook_Client_SetupStatusFailed("battery CCCD write", s2);
+                    return;
                 }
-                /* Battery CCCD not found or write failed — fall through to TX desc step
-                 * by setting state and letting the shared advance logic below run. */
+                /* Battery CCCD not found — fall through to TX desc step by
+                 * setting state and letting the shared advance logic below run. */
                 g_ctx.discState = DISC_STATE_BATTERY_NOTIFY_WRITE; /* treated as already done */
             }
 
@@ -484,7 +538,9 @@ void FS_ActiveLook_Client_EventHandler(void *p_blecore_evt, uint8_t hci_event_ev
                         APP_DBG_MSG("ActiveLook_Client: Discovering TX descriptors...\n");
                         return;
                     }
-                    APP_DBG_MSG("ActiveLook_Client: disc_all_char_desc(tx) fail=0x%02X\n", s);
+                    FS_ActiveLook_Client_SetupStatusFailed(
+                        "TX descriptor discovery", s);
+                    return;
                 }
                 g_ctx.discState = DISC_STATE_TX_NOTIFY_WRITE; /* skip TX step */
             }
@@ -508,8 +564,10 @@ void FS_ActiveLook_Client_EventHandler(void *p_blecore_evt, uint8_t hci_event_ev
                         g_ctx.discState = DISC_STATE_TX_NOTIFY_WRITE;
                         return;
                     }
+                    FS_ActiveLook_Client_SetupStatusFailed("TX CCCD write", s);
+                    return;
                 }
-                g_ctx.discState = DISC_STATE_TX_NOTIFY_WRITE; /* skip / write failed */
+                g_ctx.discState = DISC_STATE_TX_NOTIFY_WRITE; /* no TX CCCD */
             }
 
             if (g_ctx.discState == DISC_STATE_TX_NOTIFY_WRITE)
@@ -529,9 +587,11 @@ void FS_ActiveLook_Client_EventHandler(void *p_blecore_evt, uint8_t hci_event_ev
                         APP_DBG_MSG("ActiveLook_Client: Discovering Ctrl descriptors...\n");
                         return;
                     }
-                    APP_DBG_MSG("ActiveLook_Client: disc_all_char_desc(ctrl) fail=0x%02X\n", s);
+                    FS_ActiveLook_Client_SetupStatusFailed(
+                        "CB9 descriptor discovery", s);
+                    return;
                 }
-                g_ctx.discState = DISC_STATE_CTRL_NOTIFY_WRITE; /* skip Ctrl step */
+                g_ctx.discState = DISC_STATE_CTRL_NOTIFY_WRITE; /* no Ctrl char */
             }
 
             if (g_ctx.discState == DISC_STATE_CTRL_DESC_IN_PROGRESS)
@@ -554,8 +614,10 @@ void FS_ActiveLook_Client_EventHandler(void *p_blecore_evt, uint8_t hci_event_ev
                         g_ctx.discState = DISC_STATE_CTRL_NOTIFY_WRITE;
                         return;
                     }
+                    FS_ActiveLook_Client_SetupFlowControlFailed(s);
+                    return;
                 }
-                g_ctx.discState = DISC_STATE_CTRL_NOTIFY_WRITE; /* skip / write failed */
+                g_ctx.discState = DISC_STATE_CTRL_NOTIFY_WRITE; /* no Ctrl CCCD */
             }
 
             if (g_ctx.discState == DISC_STATE_CTRL_NOTIFY_WRITE)
@@ -572,20 +634,14 @@ void FS_ActiveLook_Client_EventHandler(void *p_blecore_evt, uint8_t hci_event_ev
                  * descriptor at all now fail to connect instead of running
                  * blind. That is a visible, diagnosable failure rather than a
                  * display that freezes in the air. */
-                if (g_ctx.ctrlSubscribeStarted && pc->Error_Code == 0)
+                if (g_ctx.ctrlSubscribeStarted)
                 {
                     g_ctx.ctrlSubscribed = 1;
                 }
 
                 if (!g_ctx.ctrlSubscribed)
                 {
-                    FS_Log_WriteEventAsync(
-                        "ENGO GATT setup failed: no CB9 flow control (started=%u err=0x%02X)",
-                        (unsigned)g_ctx.ctrlSubscribeStarted,
-                        (unsigned)pc->Error_Code);
-                    APP_DBG_MSG("ActiveLook_Client: no CB9 subscription — dropping link\n");
-                    g_ctx.discState = DISC_STATE_IDLE;
-                    FS_ActiveLook_Client_ForceDisconnect();
+                    FS_ActiveLook_Client_SetupFlowControlFailed(pc->Error_Code);
                     return;
                 }
 

@@ -36,6 +36,10 @@ void FS_ActiveLook_DeInit(void);
  * Call AFTER FS_Log_Init (FS_ActiveLook_Init runs before logging is up). */
 void FS_ActiveLook_LogBootInfo(void);
 
+/* Called after the glasses' central connection succeeds, immediately before
+ * GATT discovery starts. Arms the full-sequence discovery watchdog. */
+void FS_ActiveLook_OnDiscoveryStart(void);
+
 /* Called on BLE disconnect: resets the app FSM to idle and disarms the
  * repeating update timer so no writes happen until re-discovery. */
 void FS_ActiveLook_OnDisconnect(void);
