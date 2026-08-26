@@ -136,6 +136,8 @@ typedef struct
 
     /* Control / flow-control characteristic (...CB9) */
     uint8_t  ctrlCharFound;
+    uint8_t  ctrlSubscribeStarted; /* CB9 CCCD write was issued... */
+    uint8_t  ctrlSubscribed;       /* ...and the procedure came back clean */
     uint16_t ctrlCharHandle;
     uint16_t ctrlCCCDHandle;
 
@@ -208,6 +210,8 @@ void FS_ActiveLook_Client_StartDiscovery(uint16_t connectionHandle)
     g_ctx.txCCCDHandle          = 0;
 
     g_ctx.ctrlCharFound         = 0;
+    g_ctx.ctrlSubscribeStarted  = 0;
+    g_ctx.ctrlSubscribed        = 0;
     g_ctx.ctrlCharHandle        = 0;
     g_ctx.ctrlCCCDHandle        = 0;
 
@@ -546,6 +550,7 @@ void FS_ActiveLook_Client_EventHandler(void *p_blecore_evt, uint8_t hci_event_ev
                     APP_DBG_MSG("ActiveLook_Client: Enable Ctrl notify => 0x%02X\n", s);
                     if (s == BLE_STATUS_SUCCESS)
                     {
+                        g_ctx.ctrlSubscribeStarted = 1;
                         g_ctx.discState = DISC_STATE_CTRL_NOTIFY_WRITE;
                         return;
                     }
@@ -555,7 +560,35 @@ void FS_ActiveLook_Client_EventHandler(void *p_blecore_evt, uint8_t hci_event_ev
 
             if (g_ctx.discState == DISC_STATE_CTRL_NOTIFY_WRITE)
             {
-                /* Ctrl step complete (write done or skipped) — full discovery done. */
+                /* CB9 carries the glasses' STOP. Without it we would push
+                 * frames at a renderer that has no way of telling us to wait,
+                 * and over-driving that buffer is exactly what freezes their
+                 * display while BLE stays up — the failure this whole layer is
+                 * built to avoid. So a link whose flow control did not
+                 * subscribe is not a link we bring up: log it, terminate, and
+                 * let the rescan try again.
+                 *
+                 * Deliberate behaviour change: glasses that expose no CB9
+                 * descriptor at all now fail to connect instead of running
+                 * blind. That is a visible, diagnosable failure rather than a
+                 * display that freezes in the air. */
+                if (g_ctx.ctrlSubscribeStarted && pc->Error_Code == 0)
+                {
+                    g_ctx.ctrlSubscribed = 1;
+                }
+
+                if (!g_ctx.ctrlSubscribed)
+                {
+                    FS_Log_WriteEventAsync(
+                        "ENGO GATT setup failed: no CB9 flow control (started=%u err=0x%02X)",
+                        (unsigned)g_ctx.ctrlSubscribeStarted,
+                        (unsigned)pc->Error_Code);
+                    APP_DBG_MSG("ActiveLook_Client: no CB9 subscription — dropping link\n");
+                    g_ctx.discState = DISC_STATE_IDLE;
+                    FS_ActiveLook_Client_ForceDisconnect();
+                    return;
+                }
+
                 g_ctx.discState = DISC_STATE_IDLE;
                 g_ctx.linkUp    = true;
                 APP_DBG_MSG("ActiveLook_Client: Full discovery done. Rx=0x%04X linkUp=true\n",

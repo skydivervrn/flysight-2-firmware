@@ -560,7 +560,17 @@ static void speakValue(
 		speech_ptr = writeInt32ToBuf(speech_ptr, 100 * atan2(velD, current->gSpeed) / M_PI * 180, 2, 1, 0);
 		break;
 	case FS_CONFIG_MODE_ALTITUDE:
-		if (config->speech[cur_speech].units == FS_CONFIG_UNITS_METERS)
+		/* Here `decimals` is a step multiplier, not a count of digits, so a
+		 * zero — a value CONFIG.TXT may legitimately carry, and one this file
+		 * assigns itself a few lines above — divides by zero on the next line.
+		 * Read it as "whole units, no subdivision", which is what no decimals
+		 * means everywhere else. */
+		if (config->speech[cur_speech].decimals == 0)
+		{
+			step_size = (config->speech[cur_speech].units == FS_CONFIG_UNITS_METERS)
+					? 10000 : 3048;
+		}
+		else if (config->speech[cur_speech].units == FS_CONFIG_UNITS_METERS)
 		{
 			step_size = 10000 * config->speech[cur_speech].decimals;
 		}
