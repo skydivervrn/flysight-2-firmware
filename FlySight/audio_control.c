@@ -560,20 +560,36 @@ static void speakValue(
 		speech_ptr = writeInt32ToBuf(speech_ptr, 100 * atan2(velD, current->gSpeed) / M_PI * 180, 2, 1, 0);
 		break;
 	case FS_CONFIG_MODE_ALTITUDE:
-		if (config->speech[cur_speech].units == FS_CONFIG_UNITS_METERS)
-		{
-			step_size = 10000 * config->speech[cur_speech].decimals;
-		}
-		else
-		{
-			step_size = 3048 * config->speech[cur_speech].decimals;
-		}
+	{
+		/* `decimals` is a step multiplier here, not a count of digits -- the
+		 * config template says so: "Altitude step in Mode 12; Decimal places
+		 * in all other Modes". Sp_Dec is parsed with atol into an int32_t and
+		 * never range-checked, so CONFIG.TXT can put anything in it.
+		 *
+		 * Zero makes step_size zero, and integer division by zero returns zero
+		 * on this core -- DIV_0_TRP is left clear, so it is defined behaviour
+		 * rather than a fault. The device then announces an altitude of zero,
+		 * confidently, at every callout. A negative value gives a negative
+		 * step.
+		 *
+		 * Anything that is not a positive step is read as "whole units, no
+		 * subdivision" -- what no decimals means everywhere else -- and the
+		 * same multiplier is used on both sides. Applying it only to the
+		 * divisor would still announce `step * 0`. It stays int32_t on
+		 * purpose: narrowing to a byte turns Sp_Dec 256 back into a zero
+		 * step. */
+		const int32_t steps = (config->speech[cur_speech].decimals > 0)
+				? config->speech[cur_speech].decimals : 1;
+
+		step_size = ((config->speech[cur_speech].units == FS_CONFIG_UNITS_METERS)
+				? 10000 : 3048) * steps;
 		step = ((current->hMSL - config->dz_elev) * 10 + step_size / 2) / step_size;
 		speech_ptr = speech_buf + 2;
-		speech_ptr = numberToSpeech(step * config->speech[cur_speech].decimals, speech_ptr);
+		speech_ptr = numberToSpeech(step * steps, speech_ptr);
 		end_ptr = speech_ptr;
 		speech_ptr = speech_buf + 2;
 		break;
+	}
 	}
 
 	// Step 1.5: Include label
