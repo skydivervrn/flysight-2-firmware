@@ -87,6 +87,19 @@ void FS_GNSS_Start(void);
 void FS_GNSS_Stop(void);
 
 const FS_GNSS_Data_t *FS_GNSS_GetData(void);
+
+/* Age of the newest COMPLETE GNSS sample, in milliseconds.
+ *
+ * `gpsFix` records whether the receiver had a solution when it last spoke. It
+ * says nothing about whether it is still speaking: if the module, the UART or
+ * the pairing of PVT with VELNED stalls, every field in FS_GNSS_Data_t keeps
+ * its last value with the fix flag intact, and everything downstream goes on
+ * treating it as current. */
+uint32_t FS_GNSS_MsSinceUpdate(void);
+
+/* True when the newest complete sample is too old to act on, or when none has
+ * arrived since the receiver was initialised. */
+bool FS_GNSS_IsStale(void);
 void FS_GNSS_DataReady_SetCallback(void (*callback)(void));
 
 void FS_GNSS_Timepulse(void);

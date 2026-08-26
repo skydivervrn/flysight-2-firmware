@@ -637,6 +637,30 @@ static void FS_GNSS_SendMessage(uint8_t msgClass, uint8_t msgId, uint16_t size, 
 	FS_GNSS_PutChar(ckB);
 }
 
+/* Written where messages are parsed, read from the tone and speech task. A
+ * 32-bit aligned load is single-instruction on this core, so there is nothing
+ * torn to guard against; volatile keeps the compiler from hoisting the load
+ * out of a caller's loop and answering with an age that stopped advancing. */
+static volatile uint32_t gnssLastCompleteTick;
+static volatile uint8_t  gnssEverComplete;
+
+/* How old a complete sample may be before nothing should be read from it. At
+ * the default 5 Hz a sample is due every 200 ms, so two seconds is ten missed
+ * ones: past any plausible jitter, and short enough that a wingsuit at 40 m/s
+ * has moved only 80 m. */
+#define GNSS_STALE_MS 2000u
+
+uint32_t FS_GNSS_MsSinceUpdate(void)
+{
+	if (!gnssEverComplete) return GNSS_STALE_MS;
+	return HAL_GetTick() - gnssLastCompleteTick;
+}
+
+bool FS_GNSS_IsStale(void)
+{
+	return FS_GNSS_MsSinceUpdate() >= GNSS_STALE_MS;
+}
+
 static void FS_GNSS_ReceiveMessage(uint8_t msgReceived, uint32_t timeOfWeek)
 {
 	if (timeOfWeek != gnssTimeOfWeek)
@@ -650,6 +674,10 @@ static void FS_GNSS_ReceiveMessage(uint8_t msgReceived, uint32_t timeOfWeek)
 	if (gnssMsgReceived == UBX_MSG_ALL)
 	{
 		gnssData.iTOW = timeOfWeek;
+		/* Stamped only when a COMPLETE sample lands: every field then belongs
+		 * to this instant, which is what makes the age meaningful. */
+		gnssLastCompleteTick = HAL_GetTick();
+		gnssEverComplete = 1;
 		if (data_ready_callback)
 		{
 			data_ready_callback();
@@ -864,6 +892,10 @@ void FS_GNSS_Init(void)
 	// Reset state
 	gnssTimeOfWeek = 0;
 	gnssMsgReceived = 0;
+	/* Freshness starts over with the receiver, so samples from before this
+	 * init cannot read as current after it. */
+	gnssLastCompleteTick = 0;
+	gnssEverComplete = 0;
 	validTime = false;
 
 	updateCount = 0;

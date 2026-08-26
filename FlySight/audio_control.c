@@ -879,7 +879,11 @@ static void producerTask(void)
 	memcpy(&config, FS_Config_Get(), sizeof(FS_Config_Data_t));
 	memcpy(&current, FS_GNSS_GetData(), sizeof(FS_GNSS_Data_t));
 
-	if (current.gpsFix == 3)
+	/* A fix flag from a receiver that has gone quiet is not a fix. Without the
+	 * freshness test the tones and the alarms keep running on the last sample:
+	 * a steady note describing a descent rate from minutes ago, which is worse
+	 * than silence because it sounds exactly like a working instrument. */
+	if (current.gpsFix == 3 && !FS_GNSS_IsStale())
 	{
 		flags |= FLAG_HAS_FIX;
 
