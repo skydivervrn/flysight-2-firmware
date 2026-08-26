@@ -138,6 +138,7 @@ typedef struct
 
     /* Control / flow-control characteristic (...CB9) */
     uint8_t  ctrlCharFound;
+    uint8_t  terminating;          /* a disconnect has been asked for already */
     uint8_t  batteryReadIssued;    /* first battery read already sent */
     uint8_t  ctrlSubscribeStarted; /* CB9 CCCD write was issued... */
     uint8_t  ctrlSubscribed;       /* ...and the procedure came back clean */
@@ -259,6 +260,7 @@ void FS_ActiveLook_Client_StartDiscovery(uint16_t connectionHandle)
     g_ctx.linkUp                = false;
     g_ctx.stopSinceTick         = 0;
     g_ctx.writeFailStreak       = 0;
+    g_ctx.terminating           = 0;
     g_ctx.negotiatedMTU         = 23;  /* reset to default; updated on MTU resp */
 
     g_ctx.whichService = SERVICE_NONE;
@@ -1014,6 +1016,10 @@ tBleStatus FS_ActiveLook_Client_WriteWithoutResp(const uint8_t *data, uint16_t l
     }
     else
     {
+        /* The latch is NOT cleared here: a write that happens to succeed after
+         * we have asked for a disconnect does not cancel it. It is cleared by
+         * the memset in FS_ActiveLook_Client_OnDisconnect, when the link has
+         * actually gone. */
         g_ctx.writeFailStreak = 0;
     }
     return s;
@@ -1041,6 +1047,20 @@ uint16_t FS_ActiveLook_Client_WriteFailStreak(void)
  * reset + rescan path (app_ble.c), which also self-heals a wedged glasses link. */
 void FS_ActiveLook_Client_ForceDisconnect(void)
 {
+    /* Asked for once per link. The HCI terminate takes a moment to produce its
+     * disconnection event — on a link that is already failing, more than a
+     * second — and the self-heal checks run every AL_Rate tick. Without this
+     * latch one bad patch of radio produced eight identical "self-heal"
+     * lines, 250 ms apart, all asking for a disconnect that was already on
+     * its way. The log then reads like eight separate faults instead of one.
+     *
+     * The streak is cleared here too: it has done its job, and leaving it
+     * above the threshold is what made every following tick fire again. */
+    if (g_ctx.terminating) return;
+
+    g_ctx.terminating    = 1;
+    g_ctx.writeFailStreak = 0;
+
     if (g_ctx.connHandle != 0xFFFF)
         (void)aci_gap_terminate(g_ctx.connHandle, 0x13); /* remote user terminated */
 }

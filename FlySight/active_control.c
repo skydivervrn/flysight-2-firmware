@@ -47,6 +47,14 @@
 
 static uint8_t led_timer_id;
 
+/* Once a second, for as long as ACTIVE lasts: the only periodic path here that
+ * does not depend on a GNSS sample arriving — which is the whole point, since
+ * what it watches for is samples not arriving. */
+#define HEALTH_TIMER_MSEC   1000
+#define HEALTH_TIMER_TICKS  (HEALTH_TIMER_MSEC*1000/CFG_TS_TICK_VAL)
+static uint8_t health_timer_id;
+static bool gnssWasStale;
+
 static volatile bool hasFix;
 static volatile bool rtcUpdated;
 
@@ -60,6 +68,32 @@ static FS_GNSS_Time_t savedTime;
 void FS_ActiveControl_DataReady_Callback(void);
 void FS_ActiveControl_TimeReady_Callback(bool validTime);
 void FS_ActiveControl_RawReady_Callback(void);
+
+/* Says in the log when the receiver stopped talking, and when it started
+ * again. This is what the dashes on the HUD mean, and without it a flight log
+ * shows nothing at all for a stall.
+ *
+ * It lives here rather than on the HUD tick because the two failures arrive
+ * together: a device that loses GNSS is often the same device whose radio link
+ * to the glasses is struggling, and a check that only runs while the glasses
+ * are connected misses exactly the case worth recording. */
+static void FS_ActiveControl_Health_Timer(void)
+{
+	const bool stale = FS_GNSS_IsStale();
+
+	if (stale == gnssWasStale) return;
+
+	gnssWasStale = stale;
+	if (stale)
+	{
+		FS_Log_WriteEventAsync("GNSS stale: no complete sample for %lu ms",
+				(unsigned long)FS_GNSS_MsSinceUpdate());
+	}
+	else
+	{
+		FS_Log_WriteEventAsync("GNSS fresh again");
+	}
+}
 
 static void FS_ActiveControl_LED_Timer(void)
 {
@@ -85,6 +119,13 @@ void FS_ActiveControl_Init(void)
 	// Initialize LED timer
 	HW_TS_Create(CFG_TIM_PROC_ID_ISR, &led_timer_id, hw_ts_SingleShot, FS_ActiveControl_LED_Timer);
 
+	/* Initialize the GNSS freshness watchdog. It starts "fresh" so the first
+	 * transition logged is a real one rather than the receiver's cold start,
+	 * which every session has and nobody needs a line about. */
+	gnssWasStale = false;
+	HW_TS_Create(CFG_TIM_PROC_ID_ISR, &health_timer_id, hw_ts_Repeated, FS_ActiveControl_Health_Timer);
+	HW_TS_Start(health_timer_id, HEALTH_TIMER_TICKS);
+
 	// Initialize state
 	hasFix = false;
 	rtcUpdated = false;
@@ -102,8 +143,10 @@ void FS_ActiveControl_DeInit(void)
 	// Update state
 	state = FS_CONTROL_INACTIVE;
 
-	// Delete timer
+	// Delete timers
 	HW_TS_Delete(led_timer_id);
+	HW_TS_Stop(health_timer_id);
+	HW_TS_Delete(health_timer_id);
 
 	// Disable charging
 	FS_Charge_SetCurrent(FS_CHARGE_DISABLE);
