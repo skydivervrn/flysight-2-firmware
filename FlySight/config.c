@@ -462,8 +462,28 @@ FS_Config_Result_t FS_Config_Read(const char *filename)
 	 * FS_Config_Init. */
 	uint8_t alOpen = 0;
 
-	if (f_open(&configFile, filename, FA_READ) != FR_OK)
-		return FS_CONFIG_ERR;
+	/* "No such file" is the only outcome that earns a default written over the
+	 * top. FR_DISK_ERR, FR_NOT_READY and the rest mean the card could not be
+	 * read, which is not the same as there being nothing to read — answering
+	 * those with FA_CREATE_ALWAYS would replace a configuration that is
+	 * probably fine. */
+	{
+		const FRESULT fr = f_open(&configFile, filename, FA_READ);
+
+		if (fr == FR_NO_FILE || fr == FR_NO_PATH)
+			return FS_CONFIG_ERR;
+		if (fr != FR_OK)
+			return FS_CONFIG_ERR_IO;
+	}
+
+	/* Everything below writes straight into the live `config`. If the read
+	 * fails part way, the device would otherwise fly on a mixture of this
+	 * file's first half and whatever was there before — so keep a copy and put
+	 * it back. Static rather than on the stack: this struct is large enough
+	 * that audio_control.c copying it per tick is a deliberate note in that
+	 * file, and this runs on the mode-entry path. */
+	static FS_Config_Data_t before;
+	before = config;
 
 	/* Driven by f_gets, not by f_eof: f_gets returns NULL at the end AND on a
 	 * read fault, while f_eof only knows about the end. A card that errors
@@ -761,7 +781,15 @@ FS_Config_Result_t FS_Config_Read(const char *filename)
 	 * configuration and catastrophic when the card merely stumbled while
 	 * reading a perfectly good one. A card that fails once takes the user's
 	 * alarm altitudes, units and HUD layout with it. */
-	if (readFailed) return FS_CONFIG_ERR_IO;
+	if (readFailed)
+	{
+		/* Roll back to what was in force before this call: the defaults from
+		 * FS_Config_Init on the first read, or the previously loaded file when
+		 * an overlay fails. A configuration read half way is not one to fly
+		 * with, and now nothing does. */
+		config = before;
+		return FS_CONFIG_ERR_IO;
+	}
 
 	/* A hand-edited file can name any number at all; fold it into range once,
 	 * here, so nothing downstream has to. */
