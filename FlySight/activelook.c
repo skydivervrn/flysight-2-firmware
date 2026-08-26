@@ -1,6 +1,7 @@
 #include "main.h"
 #include "activelook.h"
 #include "activelook_client.h"
+#include "ble_diag.h"
 #include "activelook_mode0.h"
 #include "activelook_proto.h"
 #include "app_common.h"
@@ -25,6 +26,7 @@ typedef enum
 
 /*----- Module-level static variables -----*/
 static FS_ActiveLook_State_t s_state = AL_STATE_INIT;
+static bool s_running = false;
 
 static uint8_t timer_id;
 static volatile uint8_t s_discoveryInProgress;
@@ -96,12 +98,21 @@ void AL_SelectMode(uint8_t modeId)
  ******************************************************************************/
 static void OnActiveLookDiscoveryComplete(void)
 {
+    /* A connection can finish after ACTIVE has already been left. Never let a
+     * late GATT callback resurrect the HUD FSM or start a deleted timer. */
+    if (!s_running)
+    {
+        FS_ActiveLook_Client_ForceDisconnect();
+        return;
+    }
+
     APP_DBG_MSG("ActiveLook: Discovery complete\n");
 
     /* The shared timer becomes the periodic display timer after setup. */
     s_discoveryInProgress = 0;
     s_discoveryTimedOut = 0;
-    HW_TS_Stop(timer_id);
+    if (s_running)
+        HW_TS_Stop(timer_id);
 
     FS_Log_WriteEventAsync("ENGO link ready (MTU %u)",
                            (unsigned)FS_ActiveLook_Client_GetMTU());
@@ -136,7 +147,8 @@ static void FS_ActiveLook_Task(void)
          * terminate command belong here in the sequencer task. */
         s_discoveryTimedOut = 0;
         s_discoveryInProgress = 0;
-        HW_TS_Stop(timer_id);
+        if (s_running)
+            HW_TS_Stop(timer_id);
         FS_Log_WriteEventAsync("ENGO GATT setup failed: discovery timeout 10s");
         FS_ActiveLook_Client_ForceDisconnect();
         return;
@@ -374,6 +386,11 @@ static void FS_ActiveLook_Timer(void)
  ******************************************************************************/
 void FS_ActiveLook_OnDiscoveryStart(void)
 {
+    /* Outside ACTIVE the timer has been deleted (FS_ActiveLook_DeInit), and a
+     * connection-complete event can still arrive after that — the same late
+     * event the lifecycle gate exists for. */
+    if (!s_running) return;
+
     s_discoveryTimedOut = 0;
     s_discoveryInProgress = 1;
     HW_TS_Stop(timer_id);
@@ -421,7 +438,8 @@ void FS_ActiveLook_OnDisconnect(void)
     APP_DBG_MSG("ActiveLook: Disconnect — resetting FSM\n");
 
     /* Stop the periodic update timer (safe to call even when not running) */
-    HW_TS_Stop(timer_id);
+    if (s_running)
+        HW_TS_Stop(timer_id);
     s_discoveryInProgress = 0;
     s_discoveryTimedOut = 0;
 
@@ -445,6 +463,9 @@ void FS_ActiveLook_LogBootInfo(void)
 
 void FS_ActiveLook_Init(void)
 {
+    s_running = true;
+    FS_BleDiag_Log("ENGO lifecycle ACTIVE");
+
     /* Re-zero the barometric altitude at every ACTIVE entry ("switch-on"):
      * the device "off" is SLEEP with RAM retained, so without this the zero
      * point would survive across sessions. Deliberately NOT done on glasses
@@ -471,14 +492,26 @@ void FS_ActiveLook_Init(void)
 
 void FS_ActiveLook_DeInit(void)
 {
+	/* Close the lifecycle gate before queuing asynchronous radio teardown.
+	 * Otherwise its later disconnection event restarts scanning outside ACTIVE,
+	 * allowing powered-on glasses to reconnect and receive retained sensor data. */
+	s_running = false;
+	FS_BleDiag_Log("ENGO lifecycle STOP");
+
 	/* Reset state */
 	s_state = AL_STATE_INIT;
 	s_discoveryInProgress = 0;
 	s_discoveryTimedOut = 0;
 
 	/* Delete update timer */
+	HW_TS_Stop(timer_id);
 	HW_TS_Delete(timer_id);
 
     /* Disconnect from the device if desired */
     UTIL_SEQ_SetTask(1 << CFG_TASK_DISCONN_DEV_1_ID, CFG_SCH_PRIO_0);
+}
+
+bool FS_ActiveLook_IsRunning(void)
+{
+    return s_running;
 }

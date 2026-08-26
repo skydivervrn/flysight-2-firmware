@@ -202,6 +202,11 @@ typedef struct
 #define FAST_ADV_TIMEOUT               (30*1000*1000/CFG_TS_TICK_VAL) /**< 30s */
 #define INITIAL_ADV_TIMEOUT            (60*1000*1000/CFG_TS_TICK_VAL) /**< 60s */
 
+/* A GAP command can legitimately be refused with 0x0C while the controller is
+ * finishing the previous scan/connect/disconnect procedure.  Retrying through
+ * the sequencer immediately can form a tight loop, so give CPU2 time to settle. */
+#define ENGO_SCAN_RETRY_TIMEOUT         (500*1000/CFG_TS_TICK_VAL) /**< 500 ms */
+
 #define BD_ADDR_SIZE_LOCAL    6
 
 /* USER CODE BEGIN PD */
@@ -255,6 +260,11 @@ uint8_t a_AdvData[15] =
 
 /* USER CODE BEGIN PV */
 uint8_t Advertising_mgr_timer_Id;
+
+/* One-shot backoff used to make ENGO discovery self-healing after a transient
+ * GAP command failure or an unsuccessful connection-complete event. */
+static uint8_t Engo_scan_retry_timer_Id;
+static uint8_t engo_scan_retry_pending = 0;
 
 /* Advertising callback */
 void (*Adv_Callback)(void) = 0;
@@ -326,6 +336,8 @@ static void Adv_Update_Req(void);
 static void Adv_Update(void);
 static void APP_BLE_UpdateAdvertisingData(APP_BLE_ConnStatus_t NewStatus);
 static int8_t ble_count_bonded_devices(void);
+static void Engo_Scan_Retry_Timer(void);
+static void Schedule_Engo_Scan_Retry(const char *cause, tBleStatus status);
 static void Scan_Request(void);
 static void Connect_Request(void);
 static void Disconnect_Request(void);
@@ -471,6 +483,8 @@ void APP_BLE_Init(void)
   /* USER CODE BEGIN APP_BLE_Init_3 */
   /* Create timer to handle the connection state machine */
   HW_TS_Create(CFG_TIM_PROC_ID_ISR, &Advertising_mgr_timer_Id, hw_ts_SingleShot, Adv_Update_Req);
+  HW_TS_Create(CFG_TIM_PROC_ID_ISR, &Engo_scan_retry_timer_Id,
+               hw_ts_SingleShot, Engo_Scan_Retry_Timer);
 #if 0
   /* USER CODE END APP_BLE_Init_3 */
 
@@ -508,6 +522,7 @@ SVCCTL_UserEvtFlowStatus_t SVCCTL_App_Notification(void *p_Pckt)
   evt_le_meta_event *p_meta_evt;
   evt_blecore_aci   *p_blecore_evt;
   tBleStatus        ret = BLE_STATUS_INVALID_PARAMS;
+  hci_le_connection_complete_event_rp0          *p_connection_complete_event;
   hci_le_enhanced_connection_complete_event_rp0 *p_enhanced_connection_complete_event;
   hci_disconnection_complete_event_rp0        *p_disconnection_complete_event;
 #if (CFG_DEBUG_APP_TRACE != 0)
@@ -519,6 +534,11 @@ SVCCTL_UserEvtFlowStatus_t SVCCTL_App_Notification(void *p_Pckt)
   uint8_t role, event_type, event_data_size;
   uint8_t *adv_report_data;
   uint16_t connection_handle;
+  uint8_t connection_status, peer_address_type;
+  const uint8_t *peer_address;
+  const uint8_t *peer_rpa;
+  uint8_t no_peer_rpa[6] = {0};
+  uint16_t connection_interval, supervision_timeout;
 
   /* PAIRING */
   aci_gap_pairing_complete_event_rp0          *p_pairing_complete;
@@ -564,10 +584,13 @@ SVCCTL_UserEvtFlowStatus_t SVCCTL_App_Notification(void *p_Pckt)
         FS_Log_WriteEventAsync("ENGO disconnected: reason 0x%02X",
                                p_disconnection_complete_event->Reason);
 
-        /* Reset GATT client and app FSM, then restart discovery */
+        /* Reset GATT client and app FSM. Restart discovery only while ACTIVE
+         * still owns the ENGO link: DeInit also comes through this event, and
+         * the old unconditional restart connected to glasses while inactive. */
         FS_ActiveLook_Client_OnDisconnect();
         FS_ActiveLook_OnDisconnect();
-        UTIL_SEQ_SetTask(1 << CFG_TASK_START_SCAN_ID, CFG_SCH_PRIO_0);
+        if (FS_ActiveLook_IsRunning())
+          UTIL_SEQ_SetTask(1 << CFG_TASK_START_SCAN_ID, CFG_SCH_PRIO_0);
       }
 
       if (p_disconnection_complete_event->Connection_Handle == BleApplicationContext.connectionHandleCentral)
@@ -626,14 +649,40 @@ SVCCTL_UserEvtFlowStatus_t SVCCTL_App_Notification(void *p_Pckt)
           /* USER CODE END EVT_LE_CONN_UPDATE_COMPLETE */
           break;
 
+        case HCI_LE_CONNECTION_COMPLETE_SUBEVT_CODE:
+          /* With privacy disabled the controller reports the shorter legacy
+           * Connection Complete event. The old code handled only Enhanced
+           * Connection Complete, so the link existed but its handle was never
+           * recorded: disconnect was classified as peer=other and advertising
+           * was never restarted. Normalize both event layouts below. */
+          p_connection_complete_event =
+              (hci_le_connection_complete_event_rp0 *) p_meta_evt->data;
+          connection_status = p_connection_complete_event->Status;
+          connection_handle = p_connection_complete_event->Connection_Handle;
+          role = p_connection_complete_event->Role;
+          peer_address_type = p_connection_complete_event->Peer_Address_Type;
+          peer_address = p_connection_complete_event->Peer_Address;
+          peer_rpa = no_peer_rpa;
+          connection_interval = p_connection_complete_event->Conn_Interval;
+          supervision_timeout = p_connection_complete_event->Supervision_Timeout;
+          goto connection_complete_common;
+
         case HCI_LE_ENHANCED_CONNECTION_COMPLETE_SUBEVT_CODE:
           p_enhanced_connection_complete_event = (hci_le_enhanced_connection_complete_event_rp0 *) p_meta_evt->data;
           /**
            * The connection is done, there is no need anymore to schedule the LP ADV
            */
 
+          connection_status = p_enhanced_connection_complete_event->Status;
           connection_handle = p_enhanced_connection_complete_event->Connection_Handle;
           role = p_enhanced_connection_complete_event->Role;
+          peer_address_type = p_enhanced_connection_complete_event->Peer_Address_Type;
+          peer_address = p_enhanced_connection_complete_event->Peer_Address;
+          peer_rpa = p_enhanced_connection_complete_event->Peer_Resolvable_Private_Address;
+          connection_interval = p_enhanced_connection_complete_event->Conn_Interval;
+          supervision_timeout = p_enhanced_connection_complete_event->Supervision_Timeout;
+
+connection_complete_common:
 
 #if FS_BLE_DIAG
           /* Record 4, the first half — and the single most informative line in
@@ -647,48 +696,54 @@ SVCCTL_UserEvtFlowStatus_t SVCCTL_App_Notification(void *p_Pckt)
            * signature of "known device, unresolvable identity". */
           {
             char idStr[18], rpaStr[18];
-            FS_BleDiag_FormatAddr(idStr, sizeof(idStr),
-                p_enhanced_connection_complete_event->Peer_Address);
-            FS_BleDiag_FormatAddr(rpaStr, sizeof(rpaStr),
-                p_enhanced_connection_complete_event->Peer_Resolvable_Private_Address);
+            FS_BleDiag_FormatAddr(idStr, sizeof(idStr), peer_address);
+            FS_BleDiag_FormatAddr(rpaStr, sizeof(rpaStr), peer_rpa);
             FS_BleDiag_Log("CONN st=0x%02X role=%u handle=0x%04X ptype=%u paddr=%s",
-                (unsigned) p_enhanced_connection_complete_event->Status,
+                (unsigned) connection_status,
                 (unsigned) role, (unsigned) connection_handle,
-                (unsigned) p_enhanced_connection_complete_event->Peer_Address_Type,
+                (unsigned) peer_address_type,
                 idStr);
             FS_BleDiag_Log("CONN handle=0x%04X peer_rpa=%s int=%u to=%u",
                 (unsigned) connection_handle, rpaStr,
-                (unsigned) p_enhanced_connection_complete_event->Conn_Interval,
-                (unsigned) p_enhanced_connection_complete_event->Supervision_Timeout);
+                (unsigned) connection_interval,
+                (unsigned) supervision_timeout);
           }
 #endif
 
-          if (p_enhanced_connection_complete_event->Status != BLE_STATUS_SUCCESS)
+          /* A failed connection complete is still an event, but it does not
+           * carry a usable handle.  The generated template used to fall
+           * through and mark the ENGO client CONNECTED forever, after which no
+           * further scan was possible.  This is especially easy to hit while
+           * the glasses are changing to Searching after ACTIVE -> SLEEP. */
+          if (connection_status != BLE_STATUS_SUCCESS)
           {
-            if (role == 0x00)
-            {
-              APP_DBG_MSG("-- CONNECTION WITH END DEVICE 1 FAILED: 0x%02X\n\r",
-                          p_enhanced_connection_complete_event->Status);
-              FS_Log_WriteEventAsync("ENGO GATT setup failed: connection complete 0x%02X",
-                  (unsigned)p_enhanced_connection_complete_event->Status);
+            /* BLEDIAG is off by default, so the same fact goes to EVENT.CSV,
+             * which is the log anyone reads after a flight. */
+            FS_Log_WriteEventAsync("ENGO GATT setup failed: connection complete 0x%02X",
+                (unsigned) connection_status);
+            FS_BleDiag_Log("ENGO conn complete FAILED st=0x%02X role=%u state=%u run=%u",
+                (unsigned) connection_status, (unsigned) role,
+                (unsigned) BleApplicationContext.EndDevice_Connection_Status[0],
+                (unsigned) FS_ActiveLook_IsRunning());
 
-              /* A failed connection-complete has no usable handle and does not
-               * produce a disconnection-complete event. Keep the required
-               * ForceDisconnect call (a safe no-op with the invalid client
-               * handle), then perform the same cleanup and rescan explicitly. */
-              FS_ActiveLook_Client_ForceDisconnect();
+            /* On a failed LE Connection Complete the spec does not guarantee
+             * that Role/peer fields are meaningful. Our own state is the safe
+             * discriminator: CONNECTING exists only for the outgoing ENGO
+             * create-connection procedure. */
+            if (BleApplicationContext.EndDevice_Connection_Status[0] == APP_BLE_CONNECTING)
+            {
               BleApplicationContext.EndDevice_Connection_Status[0] = APP_BLE_IDLE;
               BleApplicationContext.connectionHandleEndDevice1 = 0xFFFF;
-              FS_ActiveLook_Client_OnDisconnect();
-              FS_ActiveLook_OnDisconnect();
-              UTIL_SEQ_SetTask(1 << CFG_TASK_START_SCAN_ID, CFG_SCH_PRIO_0);
+              BleApplicationContext.EndDevice1Found = 0x00;
+              Schedule_Engo_Scan_Retry("conn-event", connection_status);
             }
-            else
+            else if (FS_State_Get()->enable_ble)
             {
-              APP_DBG_MSG("-- CONNECTION WITH SMART PHONE FAILED: 0x%02X\n\r",
-                          p_enhanced_connection_complete_event->Status);
+              /* An unsuccessful incoming peripheral connection leaves no
+               * phone link. Restore ordinary advertising as a precaution. */
               BleApplicationContext.SmartPhone_Connection_Status = APP_BLE_IDLE;
               BleApplicationContext.connectionHandleCentral = 0xFFFF;
+              FS_Adv_Request(APP_BLE_FAST_ADV);
             }
             break;
           }
@@ -698,8 +753,20 @@ SVCCTL_UserEvtFlowStatus_t SVCCTL_App_Notification(void *p_Pckt)
             APP_DBG_MSG("-- CONNECTION SUCCESS WITH END DEVICE 1\n\r");
             BleApplicationContext.EndDevice_Connection_Status[0] = APP_BLE_CONNECTED;
             BleApplicationContext.connectionHandleEndDevice1 = connection_handle;
-            FS_ActiveLook_OnDiscoveryStart();
-            FS_ActiveLook_Client_StartDiscovery(connection_handle);
+            if (FS_ActiveLook_IsRunning())
+            {
+              /* Arm the setup watchdog before discovery starts, so a sequence
+               * that never completes cannot hold the glasses' only central
+               * slot indefinitely. */
+              FS_ActiveLook_OnDiscoveryStart();
+              FS_ActiveLook_Client_StartDiscovery(connection_handle);
+            }
+            else
+            {
+              /* Scan/connect may have completed after ACTIVE teardown. Do not
+               * discover or draw; drop this late link immediately. */
+              (void)aci_gap_terminate(connection_handle, 0x13);
+            }
           }
           else
           {
@@ -712,13 +779,12 @@ SVCCTL_UserEvtFlowStatus_t SVCCTL_App_Notification(void *p_Pckt)
              * a private address: Peer_Address then IS the identity, of type
              * public (0x00) or static-random (0x01) respectively — the same
              * form the bonding table stores. */
-            central_id_type = p_enhanced_connection_complete_event->Peer_Address_Type;
+            central_id_type = peer_address_type;
             if (central_id_type >= 0x02)
             {
               central_id_type -= 0x02;
             }
-            memcpy(central_id_addr,
-                   p_enhanced_connection_complete_event->Peer_Address, 6);
+            memcpy(central_id_addr, peer_address, 6);
             central_id_valid = 1;
             central_pair_ok = 0;
             central_conn_tick = HAL_GetTick();
@@ -739,7 +805,7 @@ SVCCTL_UserEvtFlowStatus_t SVCCTL_App_Notification(void *p_Pckt)
             /* Configure the link */
             UTIL_SEQ_SetTask(1 << CFG_TASK_LINK_CONFIG_ID, CFG_SCH_PRIO_1);
           }
-          break; /* HCI_LE_CONNECTION_COMPLETE_SUBEVT_CODE */
+          break; /* LE Connection Complete, legacy or enhanced */
 
         case HCI_LE_ADVERTISING_REPORT_SUBEVT_CODE:
           /* USER CODE BEGIN EVT_LE_ADVERTISING_REPORT */
@@ -809,6 +875,15 @@ SVCCTL_UserEvtFlowStatus_t SVCCTL_App_Notification(void *p_Pckt)
 
               FS_Log_WriteEventAsync("ENGO found: '%s' (name=%u uuid=%u) addr %02X:%02X:%02X:%02X:%02X:%02X",
                   candName[0] ? candName : "?", foundName, foundUUID,
+                  le_advertising_event->Advertising_Report[0].Address[5],
+                  le_advertising_event->Advertising_Report[0].Address[4],
+                  le_advertising_event->Advertising_Report[0].Address[3],
+                  le_advertising_event->Advertising_Report[0].Address[2],
+                  le_advertising_event->Advertising_Report[0].Address[1],
+                  le_advertising_event->Advertising_Report[0].Address[0]);
+              FS_BleDiag_Log("ENGO found name=%u uuid=%u type=%u addr=%02X:%02X:%02X:%02X:%02X:%02X",
+                  (unsigned) foundName, (unsigned) foundUUID,
+                  (unsigned) le_advertising_event->Advertising_Report[0].Address_Type,
                   le_advertising_event->Advertising_Report[0].Address[5],
                   le_advertising_event->Advertising_Report[0].Address[4],
                   le_advertising_event->Advertising_Report[0].Address[3],
@@ -913,6 +988,11 @@ SVCCTL_UserEvtFlowStatus_t SVCCTL_App_Notification(void *p_Pckt)
               /* USER CODE END GAP_GENERAL_DISCOVERY_PROC */
 
               APP_DBG_MSG("-- GAP GENERAL DISCOVERY PROCEDURE_COMPLETED\n\r");
+              if (!FS_ActiveLook_IsRunning())
+              {
+                BleApplicationContext.EndDevice1Found = 0x00;
+                break;
+              }
               /*if a device found, connect to it, device 1 being chosen first if both found*/
               if (BleApplicationContext.EndDevice1Found == 0x01
                   && BleApplicationContext.EndDevice_Connection_Status[0] != APP_BLE_CONNECTED)
@@ -945,6 +1025,13 @@ SVCCTL_UserEvtFlowStatus_t SVCCTL_App_Notification(void *p_Pckt)
               FS_BleDiag_Log("RL retry: scan ended status=0x%02X, rescheduling",
                   (unsigned) gap_evt_proc_complete->Status);
               UTIL_SEQ_SetTask(1 << CFG_TASK_START_SCAN_ID, CFG_SCH_PRIO_0);
+            }
+            else if (gap_evt_proc_complete->Procedure_Code == GAP_GENERAL_DISCOVERY_PROC
+                     && FS_ActiveLook_IsRunning())
+            {
+              /* Do not let an ordinary aborted/failed discovery permanently
+               * strand the HUD in Searching. */
+              Schedule_Engo_Scan_Retry("scan-event", gap_evt_proc_complete->Status);
             }
           }
           break; /* ACI_GAP_PAIRING_COMPLETE_VSEVT_CODE */
@@ -1736,7 +1823,7 @@ static void FS_Adv_Request(APP_BLE_ConnStatus_t NewStatus)
     ret = aci_gap_set_undirected_connectable(Min_Inter,
                                              Max_Inter,
                                              CFG_BLE_ADDRESS_TYPE,
-                                             HCI_ADV_FILTER_WHITELIST_SCAN_CONNECT);
+                                             ADV_FILTER);
     if (ret != BLE_STATUS_SUCCESS)
     {
       APP_DBG_MSG("==>> aci_gap_set_undirected_connectable - fail, result: 0x%x \n", ret);
@@ -1746,14 +1833,15 @@ static void FS_Adv_Request(APP_BLE_ConnStatus_t NewStatus)
       APP_DBG_MSG("==>> aci_gap_set_undirected_connectable - Success\n");
     }
 
-    /* Record 5, path B: the ordinary path, and the suspect. The filter policy is
-     * hard-coded HCI_ADV_FILTER_WHITELIST_SCAN_CONNECT (0x03) — scan requests AND
-     * connection requests are accepted only from the whitelist. Compare bonds=
-     * here against the WL/BOND/RL lines just above: bonds=0 means the whitelist
-     * is empty and the radio will refuse every peer. */
+    /* Keep the logger on its stable random identity address. Android 13 did
+     * not retain the local IRK when the bond was originally created while
+     * privacy was disabled; switching a live installation to RPA advertising
+     * consequently made the same FlySight look like a new device after every
+     * reboot. The GATT security requirements still enforce pairing/bonding;
+     * this filter only controls who may establish the otherwise inert link. */
     FS_BleDiag_Log("ADV path=undirected_connectable filter=0x%02X ret=0x%02X status=%u"
                    " bonds=%d int=%u-%u",
-        (unsigned) HCI_ADV_FILTER_WHITELIST_SCAN_CONNECT, (unsigned) ret,
+        (unsigned) ADV_FILTER, (unsigned) ret,
         (unsigned) NewStatus, (int) bonded, (unsigned) Min_Inter, (unsigned) Max_Inter);
 
     /* Update advertising data */
@@ -2019,6 +2107,29 @@ static int8_t ble_count_bonded_devices(void)
   return (int8_t)total;
 }
 
+/* Timer callbacks only wake the sequencer; all HCI commands and diagnostics
+ * stay in task context. */
+static void Engo_Scan_Retry_Timer(void)
+{
+  engo_scan_retry_pending = 0;
+  if (FS_ActiveLook_IsRunning())
+    UTIL_SEQ_SetTask(1 << CFG_TASK_START_SCAN_ID, CFG_SCH_PRIO_0);
+}
+
+static void Schedule_Engo_Scan_Retry(const char *cause, tBleStatus status)
+{
+  if (!FS_ActiveLook_IsRunning())
+    return;
+
+  if (!engo_scan_retry_pending)
+  {
+    engo_scan_retry_pending = 1;
+    FS_BleDiag_Log("ENGO scan retry cause=%s status=0x%02X",
+                   cause, (unsigned) status);
+    HW_TS_Start(Engo_scan_retry_timer_Id, ENGO_SCAN_RETRY_TIMEOUT);
+  }
+}
+
 /**
  * @brief  Scan Request
  * @param  None
@@ -2051,6 +2162,22 @@ static void Scan_Request(void)
   /* USER CODE END Scan_Request_1 */
   tBleStatus result;
 
+  /* Another event may have made a retry unnecessary before its backoff
+   * expired. There must never be a stale timer left to interrupt a good scan. */
+  if (engo_scan_retry_pending)
+  {
+    HW_TS_Stop(Engo_scan_retry_timer_Id);
+    engo_scan_retry_pending = 0;
+  }
+
+  /* Queued scan tasks can outlive ACTIVE mode. The gate is checked here, at
+   * execution time, so stale work cannot reconnect to glasses while inactive. */
+  if (!FS_ActiveLook_IsRunning())
+  {
+    BleApplicationContext.EndDevice1Found = 0x00;
+    return;
+  }
+
   if (BleApplicationContext.EndDevice_Connection_Status[0] != APP_BLE_CONNECTED)
   {
     /* USER CODE BEGIN APP_BLE_CONNECTED */
@@ -2060,6 +2187,10 @@ static void Scan_Request(void)
                                                   SCAN_L,
                                                   CFG_BLE_ADDRESS_TYPE,
                                                   1);
+    FS_BleDiag_Log("ENGO scan start=0x%02X state=%u run=%u",
+                   (unsigned) result,
+                   (unsigned) BleApplicationContext.EndDevice_Connection_Status[0],
+                   (unsigned) FS_ActiveLook_IsRunning());
     if (result == BLE_STATUS_SUCCESS)
     {
     /* USER CODE BEGIN BLE_SCAN_SUCCESS */
@@ -2073,6 +2204,7 @@ static void Scan_Request(void)
 
     /* USER CODE END BLE_SCAN_FAILED */
       APP_DBG_MSG("-- BLE_App_Start_Limited_Disc_Req, Failed %02x \r\n\r", result);
+      Schedule_Engo_Scan_Retry("scan-cmd", result);
     }
   }
   /* USER CODE BEGIN Scan_Request_2 */
@@ -2091,6 +2223,12 @@ static void Connect_Request(void)
 {
   tBleStatus result;
   APP_DBG_MSG("\r\n\r** CREATE CONNECTION TO END DEVICE 1 **  \r\n\r");
+  if (!FS_ActiveLook_IsRunning())
+  {
+    BleApplicationContext.EndDevice1Found = 0x00;
+    BleApplicationContext.EndDevice_Connection_Status[0] = APP_BLE_IDLE;
+    return;
+  }
   if (BleApplicationContext.EndDevice_Connection_Status[0] != APP_BLE_CONNECTED &&
       BleApplicationContext.EndDevice_Connection_Status[0] != APP_BLE_CONNECTING)
   {
@@ -2109,6 +2247,12 @@ static void Connect_Request(void)
                                        CONN_L1,
                                        CONN_L2);
 
+    FS_BleDiag_Log("ENGO connect cmd=0x%02X type=%u addr=%02X:%02X:%02X:%02X:%02X:%02X",
+                   (unsigned) result, (unsigned) P2P_SERVER1_ADDR_TYPE,
+                   P2P_SERVER1_BDADDR[5], P2P_SERVER1_BDADDR[4],
+                   P2P_SERVER1_BDADDR[3], P2P_SERVER1_BDADDR[2],
+                   P2P_SERVER1_BDADDR[1], P2P_SERVER1_BDADDR[0]);
+
     if (result == BLE_STATUS_SUCCESS)
     {
       /* USER CODE BEGIN BLE_STATUS_END_DEVICE_1_SUCCESS */
@@ -2124,8 +2268,9 @@ static void Connect_Request(void)
       /* USER CODE END BLE_STATUS_END_DEVICE_1_FAILED */
       BleApplicationContext.EndDevice_Connection_Status[0] = APP_BLE_IDLE;
       APP_DBG_MSG("==> Connect_Request Failed, re-scheduling scan\n\r");
-      /* Re-arm scanning so we retry when glasses become available */
-      UTIL_SEQ_SetTask(1 << CFG_TASK_START_SCAN_ID, CFG_SCH_PRIO_0);
+      /* A command-disallowed result commonly means CPU2 is still completing
+       * discovery. Back off rather than immediately issuing the same command. */
+      Schedule_Engo_Scan_Retry("connect-cmd", result);
     }
   }
 
@@ -2143,6 +2288,11 @@ static void Disconnect_Request(void)
   uint16_t connection_handle = BleApplicationContext.connectionHandleEndDevice1;
 
   APP_DBG_MSG("\r\n\r** DISCONNECT FROM END DEVICE 1 **  \r\n\r");
+  if (!FS_ActiveLook_IsRunning() && engo_scan_retry_pending)
+  {
+    HW_TS_Stop(Engo_scan_retry_timer_Id);
+    engo_scan_retry_pending = 0;
+  }
   if (BleApplicationContext.EndDevice_Connection_Status[0] == APP_BLE_CONNECTED)
   {
     result = aci_gap_terminate(connection_handle, 0x13);
@@ -2156,6 +2306,18 @@ static void Disconnect_Request(void)
       BleApplicationContext.EndDevice_Connection_Status[0] = APP_BLE_IDLE;
       APP_DBG_MSG("Failed to send disconnection request. Error: 0x%02X\n", result);
     }
+  }
+  else if (BleApplicationContext.EndDevice_Connection_Status[0] == APP_BLE_CONNECTING)
+  {
+    /* Cancel a create-connection procedure that raced with ACTIVE teardown. */
+    (void)aci_gap_terminate_gap_proc(GAP_DIRECT_CONNECTION_ESTABLISHMENT_PROC);
+    BleApplicationContext.EndDevice_Connection_Status[0] = APP_BLE_IDLE;
+  }
+  else
+  {
+    /* End an in-flight discovery so it cannot find/connect to glasses later. */
+    (void)aci_gap_terminate_gap_proc(GAP_GENERAL_DISCOVERY_PROC);
+    BleApplicationContext.EndDevice1Found = 0x00;
   }
 }
 

@@ -25,6 +25,7 @@
 #include "activelook.h"
 #include "activelook_proto.h"
 #include "app_common.h"
+#include "ble_diag.h"
 #include "log.h"
 #include "dbg_trace.h"
 #include "ble.h"
@@ -264,6 +265,8 @@ void FS_ActiveLook_Client_StartDiscovery(uint16_t connectionHandle)
 
     /* Step 1: request a bigger ATT MTU from the peripheral */
     tBleStatus s = aci_gatt_exchange_config(connectionHandle);
+    FS_BleDiag_Log("ENGO GATT start handle=0x%04X mtu_cmd=0x%02X",
+                   (unsigned) connectionHandle, (unsigned) s);
     if (s == BLE_STATUS_SUCCESS)
     {
         APP_DBG_MSG("ActiveLook_Client: Requesting MTU exchange...\n");
@@ -310,6 +313,12 @@ void FS_ActiveLook_Client_EventHandler(void *p_blecore_evt, uint8_t hci_event_ev
 
             if (pc->Connection_Handle != g_ctx.connHandle)
                 break; /* Not for us */
+
+            /* The diagnostic breadcrumb from the public branch: every GATT
+             * procedure completion, state and status, in BLEDIAG.TXT. */
+            FS_BleDiag_Log("ENGO GATT proc state=%u err=0x%02X",
+                           (unsigned) g_ctx.discState,
+                           (unsigned) pc->Error_Code);
 
             /* Ignore late completions after a failure has already initiated
              * disconnect. Otherwise one failed procedure can produce multiple
@@ -487,7 +496,10 @@ void FS_ActiveLook_Client_EventHandler(void *p_blecore_evt, uint8_t hci_event_ev
 
                 /* A required CB9 characteristic always enters descriptor
                  * discovery above. Reaching this path means flow control could
-                 * not be subscribed, so preserve the existing no-link-up rule. */
+                 * not be subscribed, so preserve the existing no-link-up rule:
+                 * without CB9 the glasses cannot ask us to stop, and pushing
+                 * frames at a renderer that cannot say "wait" is what freezes
+                 * their display. */
                 FS_ActiveLook_Client_SetupFlowControlFailed(0);
                 return;
             }
@@ -681,7 +693,15 @@ void FS_ActiveLook_Client_EventHandler(void *p_blecore_evt, uint8_t hci_event_ev
                             g_ctx.rxCharHandle);
                 if (g_ctx.rxCharFound && g_ctx.cb && g_ctx.cb->OnDiscoveryComplete)
                 {
+                    FS_BleDiag_Log("ENGO GATT ready handle=0x%04X rx=0x%04X",
+                                   (unsigned) g_ctx.connHandle,
+                                   (unsigned) g_ctx.rxCharHandle);
                     g_ctx.cb->OnDiscoveryComplete();
+                }
+                else
+                {
+                    FS_BleDiag_Log("ENGO GATT incomplete: RX missing, reconnecting");
+                    FS_ActiveLook_Client_ForceDisconnect();
                 }
             }
         }
@@ -1073,6 +1093,11 @@ uint8_t FS_ActiveLook_Client_GetBatteryLevel(void)
  ******************************************************************************/
 void FS_ActiveLook_Client_OnDisconnect(void)
 {
+    FS_BleDiag_Log("ENGO GATT reset handle=0x%04X state=%u up=%u",
+                   (unsigned) g_ctx.connHandle,
+                   (unsigned) g_ctx.discState,
+                   (unsigned) g_ctx.linkUp);
+
     /* Preserve the callback pointer so it survives re-connection. */
     const FS_ActiveLook_ClientCb_t *savedCb = g_ctx.cb;
 

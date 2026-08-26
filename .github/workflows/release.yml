@@ -1,0 +1,94 @@
+name: Stable firmware
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Cache Arm GNU toolchain 12.3
+        id: cache-toolchain
+        uses: actions/cache@v4
+        with:
+          path: ~/opt/arm-gnu-toolchain-12.3.rel1-x86_64-arm-none-eabi
+          key: armgnu-12.3.rel1-x86_64
+
+      - name: Install Arm GNU toolchain 12.3
+        if: steps.cache-toolchain.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/opt && cd ~/opt
+          curl -fSL -o armgnu.tar.xz \
+            https://developer.arm.com/-/media/Files/downloads/gnu/12.3.rel1/binrel/arm-gnu-toolchain-12.3.rel1-x86_64-arm-none-eabi.tar.xz
+          tar -xf armgnu.tar.xz
+          rm armgnu.tar.xz
+
+      - name: Verify release version
+        run: |
+          HUD_VERSION=$(sed -n 's/^#define HUD_VERSION "\(.*\)"/\1/p' FlySight/activelook_mode0.c | head -1)
+          test "$GITHUB_REF_NAME" = "v$HUD_VERSION" || {
+            echo "Tag $GITHUB_REF_NAME does not match HUD_VERSION $HUD_VERSION"
+            exit 1
+          }
+          test "$(sed -n 's/^#define FS_BLE_DIAG \([01]\)$/\1/p' FlySight/ble_diag.h)" = 0 || {
+            echo "Refusing to publish stable firmware with BLEDIAG enabled"
+            exit 1
+          }
+
+      - name: Host unit tests
+        run: cd Tests && make run
+
+      - name: Build firmware
+        run: |
+          make PREFIX=$HOME/opt/arm-gnu-toolchain-12.3.rel1-x86_64-arm-none-eabi/bin/arm-none-eabi-
+          test -f build/UserApp.bin
+          strings build/FlySight.elf | grep -q "$GITHUB_REF_NAME"
+
+      - name: Encrypt for every batch
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install --quiet coincurve pycryptodome
+          cp build/UserApp.bin Deploy/Firmware_As_Built/UserApp.bin
+          mkdir -p out
+          cd Deploy
+          for B in B2 B3 B4 B5 B6 B7; do
+            k=$(echo "$B" | tr 'A-Z' 'a-z')
+            ../.venv/bin/python -c "import deploy_firmware as d; d.encrypt_firmware_with_key('Firmware_As_Built/UserApp.bin','UserApp','Public_Keys/pub_key_${k}.bin','${B}')"
+            cp "Firmware_To_Deploy/${B}_UserApp.sfb" "../out/FlySight2-ENGO-HUD-${B}.sfb"
+          done
+          cd ../out
+          for f in *.sfb; do [ "$(head -c4 "$f")" = "SFU1" ] || { echo "BAD container: $f"; exit 1; }; done
+          sha256sum *.sfb > sha256sums.txt
+          cat sha256sums.txt
+
+      - name: Publish stable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > notes.md <<'EOF'
+          Stable firmware tested on FlySight 2 and ENGO 3 hardware.
+
+          Highlights:
+          - reliable Android pairing and reconnects using a persistent per-device BLE identity;
+          - ENGO reconnect and display recovery across Active → Stop → Active transitions;
+          - browser and Groundrush over-the-air firmware installation support;
+          - configurable HUD layout and position controls.
+
+          Choose the file matching the `Pubkey_X` batch in `FLYSIGHT.TXT`, rename it to `APP.SFB`, and install it using Groundrush, the web flasher, or the orange-light USB bootloader. The wrong batch is safely ignored.
+
+          Batches B2-B7 are covered. The B7 key was read from a device's own `FLYSIGHT.TXT` rather than published upstream, so that batch name is provisional and its image has not yet been confirmed on hardware.
+          EOF
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file notes.md \
+            --verify-tag \
+            out/*.sfb out/sha256sums.txt

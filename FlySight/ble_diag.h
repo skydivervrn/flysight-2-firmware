@@ -48,7 +48,9 @@
 #ifndef BLE_DIAG_H_
 #define BLE_DIAG_H_
 
-#define FS_BLE_DIAG 1
+#ifndef FS_BLE_DIAG
+#define FS_BLE_DIAG 0
+#endif
 
 #include <stdarg.h>
 #include <stdint.h>
