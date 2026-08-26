@@ -560,30 +560,26 @@ static void speakValue(
 		speech_ptr = writeInt32ToBuf(speech_ptr, 100 * atan2(velD, current->gSpeed) / M_PI * 180, 2, 1, 0);
 		break;
 	case FS_CONFIG_MODE_ALTITUDE:
-		/* Here `decimals` is a step multiplier, not a count of digits, so a
-		 * zero — a value CONFIG.TXT may legitimately carry, and one this file
-		 * assigns itself a few lines above — divides by zero on the next line.
-		 * Read it as "whole units, no subdivision", which is what no decimals
-		 * means everywhere else. */
-		if (config->speech[cur_speech].decimals == 0)
-		{
-			step_size = (config->speech[cur_speech].units == FS_CONFIG_UNITS_METERS)
-					? 10000 : 3048;
-		}
-		else if (config->speech[cur_speech].units == FS_CONFIG_UNITS_METERS)
-		{
-			step_size = 10000 * config->speech[cur_speech].decimals;
-		}
-		else
-		{
-			step_size = 3048 * config->speech[cur_speech].decimals;
-		}
+	{
+		/* Here `decimals` is a step multiplier, not a count of digits. Zero is
+		 * a value CONFIG.TXT may legitimately carry, and one this file assigns
+		 * itself a few lines above; it used to divide by zero below. Read it as
+		 * "whole units, no subdivision" — which is what no decimals means
+		 * everywhere else — and use that same multiplier on BOTH sides of the
+		 * calculation. Fixing only the divisor left the announcement itself
+		 * multiplied by zero, so every altitude callout said "zero". */
+		const uint8_t steps = config->speech[cur_speech].decimals
+				? config->speech[cur_speech].decimals : 1;
+
+		step_size = ((config->speech[cur_speech].units == FS_CONFIG_UNITS_METERS)
+				? 10000 : 3048) * steps;
 		step = ((current->hMSL - config->dz_elev) * 10 + step_size / 2) / step_size;
 		speech_ptr = speech_buf + 2;
-		speech_ptr = numberToSpeech(step * config->speech[cur_speech].decimals, speech_ptr);
+		speech_ptr = numberToSpeech(step * steps, speech_ptr);
 		end_ptr = speech_ptr;
 		speech_ptr = speech_buf + 2;
 		break;
+	}
 	}
 
 	// Step 1.5: Include label

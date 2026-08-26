@@ -91,6 +91,7 @@ typedef enum {
     DISC_STATE_CHAR_IN_PROGRESS,
     DISC_STATE_DESC_IN_PROGRESS,        /* battery CCCD discovery  */
     DISC_STATE_BATTERY_NOTIFY_WRITE,    /* battery CCCD write      */
+    DISC_STATE_BATTERY_READ,            /* first battery value     */
     DISC_STATE_TX_DESC_IN_PROGRESS,     /* TX (CB8) CCCD discovery */
     DISC_STATE_TX_NOTIFY_WRITE,         /* TX (CB8) CCCD write     */
     DISC_STATE_CTRL_DESC_IN_PROGRESS,   /* Ctrl (CB9) CCCD discov. */
@@ -136,6 +137,7 @@ typedef struct
 
     /* Control / flow-control characteristic (...CB9) */
     uint8_t  ctrlCharFound;
+    uint8_t  batteryReadIssued;    /* first battery read already sent */
     uint8_t  ctrlSubscribeStarted; /* CB9 CCCD write was issued... */
     uint8_t  ctrlSubscribed;       /* ...and the procedure came back clean */
     uint16_t ctrlCharHandle;
@@ -244,6 +246,7 @@ void FS_ActiveLook_Client_StartDiscovery(uint16_t connectionHandle)
     g_ctx.txCCCDHandle          = 0;
 
     g_ctx.ctrlCharFound         = 0;
+    g_ctx.batteryReadIssued     = 0;
     g_ctx.ctrlSubscribeStarted  = 0;
     g_ctx.ctrlSubscribed        = 0;
     g_ctx.ctrlCharHandle        = 0;
@@ -317,7 +320,17 @@ void FS_ActiveLook_Client_EventHandler(void *p_blecore_evt, uint8_t hci_event_ev
             /* Only a successful procedure may advance discovery. Keep the
              * existing, more specific CB9 diagnostic for the required
              * flow-control subscription. */
-            if (pc->Error_Code != BLE_STATUS_SUCCESS)
+            if (pc->Error_Code != BLE_STATUS_SUCCESS &&
+                g_ctx.discState == DISC_STATE_BATTERY_READ)
+            {
+                /* A battery level we could not read is a missing nicety, not a
+                 * broken link. Carry on with the setup. */
+                APP_DBG_MSG("ActiveLook_Client: battery read failed 0x%02X — continuing\n",
+                            pc->Error_Code);
+                g_ctx.currentReadHandle = 0;
+                g_ctx.discState = DISC_STATE_BATTERY_NOTIFY_WRITE;
+            }
+            else if (pc->Error_Code != BLE_STATUS_SUCCESS)
             {
                 if (g_ctx.discState == DISC_STATE_CTRL_NOTIFY_WRITE)
                     FS_ActiveLook_Client_SetupFlowControlFailed(pc->Error_Code);
@@ -504,26 +517,43 @@ void FS_ActiveLook_Client_EventHandler(void *p_blecore_evt, uint8_t hci_event_ev
              *     need to move to the next one.  Each branch either returns (step issued)
              *     or falls through to the next check. --- */
 
+            if (g_ctx.discState == DISC_STATE_BATTERY_READ)
+            {
+                /* The battery level is a nicety; the HUD works without it. Fall
+                 * through to the TX descriptor step either way. */
+                g_ctx.currentReadHandle = 0;
+                g_ctx.discState = DISC_STATE_BATTERY_NOTIFY_WRITE;
+            }
+
             if (g_ctx.discState == DISC_STATE_BATTERY_NOTIFY_WRITE)
             {
                 /* Battery CCCD write complete (or was skipped). Issue immediate battery
                  * read if applicable, then advance to TX descriptor discovery. */
-                if (g_ctx.batteryCharFound && (g_ctx.batteryCharHandle != 0)
+                if (!g_ctx.batteryReadIssued
+                    && g_ctx.batteryCharFound && (g_ctx.batteryCharHandle != 0)
                     && (g_ctx.batteryCCCDHandle != 0))
                 {
-                    /* Only read if we actually wrote the CCCD. */
+                    /* Only read if we actually wrote the CCCD — and then WAIT
+                     * for it. The stack runs one GATT client procedure per
+                     * connection at a time, so starting the TX descriptor
+                     * discovery in the same breath as this read got the second
+                     * one refused as busy. That used to be shrugged off; since
+                     * the setup path started treating a refused procedure as a
+                     * failure, it would drop the link instead — on exactly the
+                     * glasses that do expose a battery service. */
+                    g_ctx.batteryReadIssued = 1;
                     g_ctx.currentReadHandle = g_ctx.batteryCharHandle;
                     tBleStatus rs = aci_gatt_read_char_value(g_ctx.connHandle,
                                                              g_ctx.batteryCharHandle);
                     if (rs == BLE_STATUS_SUCCESS)
                     {
                         APP_DBG_MSG("ActiveLook_Client: Requesting immediate battery read...\n");
+                        g_ctx.discState = DISC_STATE_BATTERY_READ;
+                        return;
                     }
-                    else
-                    {
-                        APP_DBG_MSG("ActiveLook_Client: Battery read failed => 0x%02X\n", rs);
-                        g_ctx.currentReadHandle = 0;
-                    }
+
+                    APP_DBG_MSG("ActiveLook_Client: Battery read failed => 0x%02X\n", rs);
+                    g_ctx.currentReadHandle = 0;
                 }
 
                 if (g_ctx.txCharFound && (g_ctx.txCharHandle != 0))

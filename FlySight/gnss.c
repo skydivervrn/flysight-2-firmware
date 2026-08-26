@@ -898,6 +898,12 @@ void FS_GNSS_Init(void)
 	// Reset state
 	gnssTimeOfWeek = 0;
 	gnssMsgReceived = 0;
+	/* Freshness starts over with the receiver. Leaving the old stamp behind
+	 * would let the samples from before this init — a different session, and
+	 * possibly a different position — read as current for up to two seconds
+	 * after the mode change that re-inits us. */
+	gnssLastCompleteTick = 0;
+	gnssEverComplete = 0;
 	validTime = false;
 
 	updateCount = 0;
