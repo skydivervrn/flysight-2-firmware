@@ -562,9 +562,11 @@ FS_Config_Result_t FS_Config_Read(const char *filename)
 		 * to element [-1]: a store just below the array, into whatever the
 		 * struct happens to keep there. The file comes off a card the user
 		 * edits by hand, and Groundrush writes it too, so a reordering bug on
-		 * either side reaches this. Sp_Dec is also range-checked: it is used
-		 * as `end_ptr -= 3 - decimals` in audio_control.c, so a large value
-		 * walks the 16-byte speech buffer forwards. */
+		 * either side reaches this. Sp_Dec only refuses negatives: it means two
+		 * different things depending on the speech mode — decimal places in
+		 * most of them, but the ALTITUDE STEP in mode 12, where "announce every
+		 * 100 m" is a legitimate setting. An earlier version of this guard
+		 * capped it at 3 and would have thrown that away. */
 		if (!strcmp(name, "Alarm_Elev") && config.num_alarms < FS_CONFIG_MAX_ALARMS)
 		{
 			if (!(flags & CONFIG_FIRST_ALARM))
@@ -628,7 +630,7 @@ FS_Config_Result_t FS_Config_Read(const char *filename)
 		}
 		if (!strcmp(name, "Sp_Dec") && config.num_speech > 0 &&
 				config.num_speech <= FS_CONFIG_MAX_SPEECH &&
-				val >= 0 && val <= 3)
+				val >= 0)
 		{
 			config.speech[config.num_speech - 1].decimals = val;
 		}
