@@ -77,9 +77,36 @@ away from the built-in layout — a file that sets it must also state coordinate
 Fields: 0 HSpd, 1 VSpd, 2 GR, 3 1/GR, 4 total speed, 5 direction to
 destination, 6 distance to destination, 7 direction to bearing, 11 dive angle,
 12 GPS altitude above `DZ_Elev`, 13 course, **14 barometric altitude** (zeroed
-at power-on), **100 status line**, **101–105 the pieces of the status line**.
-None of 14 and 100–105 needs a GPS fix; everything else reads `----` until the
-fix arrives.
+at power-on), **15 the navigation arrow**, **100 status line**, **101–105 the
+pieces of the status line**. None of 14 and 100–105 needs a GPS fix; everything
+else reads `----` until the fix arrives.
+
+## Field 15 — the navigation arrow (since v0.0.36)
+
+The only element that draws a picture rather than a reading: a square frame
+with an arrow turning inside it, **forward is up**, and the distance to the
+destination in font 0 centred underneath. `AL_Font` sizes the square — the side
+is that font's height, so 24 px at font 0 and 82 px at font 5 — and
+`AL_Units` / `AL_Dec` / `AL_Unit_Show` describe the caption, not the arrow.
+
+It needs `Lat` / `Lon` on the card, and shows an empty frame with `----`
+under it when there is no fix, no fresh sample, or no destination set. An
+arrow that pointed somewhere anyway would be a confident lie.
+
+**It ignores `Max_Dist` on purpose.** Field 5 stops computing a direction past
+that limit and answers 0.0, which draws as "dead ahead" — indistinguishable
+from being on course. The bearing itself is good at any range, so the arrow
+draws at any range.
+
+The shape lives in `FlySight/nav_arrow.c`, apart from the renderer and with no
+BLE in it, so it can be checked on the host (`Tests/test_nav_arrow.c`). The
+app carries a port in `lib/model/nav_arrow.dart`, and its test compares the two
+implementations pixel for pixel — if you change one, change the other.
+
+⚠️ **NOT YET SEEN ON GLASSES.** The geometry is tested, the frames are tested,
+the mirror is tested against three wrong implementations. Nobody has looked
+through the ENGO 3 at it. The fastest way to: `Tools/engo_mac_hud_mock.py` on
+the Mac bench, per the workflow below.
 
 ## Where the unit is drawn (since v0.0.19)
 

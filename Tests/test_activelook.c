@@ -98,6 +98,41 @@ static void test_build_text(void)
     CHECK(AL_BuildText(small, sizeof(small), 0, 0, 4, 1, 15, "toolong") == 0);
 }
 
+static void test_build_shape(void)
+{
+    uint8_t out[20];
+
+    // line (0x32) from (296,240) to (250,73): payload is four big-endian s16,
+    // no colour byte of its own — shapes inherit the last grayscale (0x30).
+    size_t n = AL_BuildShape(out, sizeof(out), AL_CMD_LINE, 296, 240, 250, 73);
+    CHECK(n == 13);             // 8 bytes of payload + 5 of frame
+    CHECK(out[0] == 0xFF);
+    CHECK(out[1] == 0x32);      // line
+    CHECK(out[2] == 0x00);
+    CHECK(out[3] == 13);
+    CHECK(out[4] == 0x01 && out[5] == 0x28);   // x0 = 296
+    CHECK(out[6] == 0x00 && out[7] == 0xF0);   // y0 = 240
+    CHECK(out[8] == 0x00 && out[9] == 0xFA);   // x1 = 250
+    CHECK(out[10] == 0x00 && out[11] == 0x49); // y1 = 73
+    CHECK(out[12] == 0xAA);
+
+    // rect (0x33) takes the same payload, so only the opcode differs.
+    CHECK(AL_BuildShape(out, sizeof(out), AL_CMD_RECT, 296, 240, 250, 73) == 13);
+    CHECK(out[1] == 0x33);
+    CHECK(out[4] == 0x01 && out[5] == 0x28);
+
+    // Negative coordinates survive as two's complement. A shape anchored near
+    // an edge hangs off the panel on purpose and the glasses clip it; a helper
+    // that mangled the sign here would fold it back on screen instead.
+    CHECK(AL_BuildShape(out, sizeof(out), AL_CMD_LINE, -1, -300, 0, 0) == 13);
+    CHECK(out[4] == 0xFF && out[5] == 0xFF);   // -1
+    CHECK(out[6] == 0xFE && out[7] == 0xD4);   // -300
+
+    // Overflow: a buffer too small returns 0 rather than writing past it.
+    uint8_t small[12];
+    CHECK(AL_BuildShape(small, sizeof(small), AL_CMD_LINE, 0, 0, 1, 1) == 0);
+}
+
 static void test_battery_pct(void)
 {
     CHECK(AL_BatteryPct(4200) == 100);
@@ -381,6 +416,7 @@ int main(void)
     test_build_overflow();
     test_flow_gate();
     test_build_text();
+    test_build_shape();
     test_battery_pct();
     test_unit_table_legacy();
     test_unit_table_named();

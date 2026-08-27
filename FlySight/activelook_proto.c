@@ -65,6 +65,20 @@ size_t AL_BuildText(uint8_t *out, size_t outcap,
     return AL_BuildFrame(out, outcap, AL_CMD_TXT, data, datalen);
 }
 
+size_t AL_BuildShape(uint8_t *out, size_t outcap, uint8_t cmd,
+                     int16_t x0, int16_t y0, int16_t x1, int16_t y1)
+{
+    const int16_t coord[4] = { x0, y0, x1, y1 };
+    uint8_t data[8];
+
+    for (int i = 0; i < 4; i++) {
+        data[i * 2]     = (uint8_t)(((uint16_t)coord[i] >> 8) & 0xFFu);
+        data[i * 2 + 1] = (uint8_t)((uint16_t)coord[i] & 0xFFu);
+    }
+
+    return AL_BuildFrame(out, outcap, cmd, data, sizeof(data));
+}
+
 uint8_t AL_BatteryPct(uint16_t mv)
 {
     if (mv <= AL_VBAT_EMPTY_MV) {

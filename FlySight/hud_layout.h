@@ -64,6 +64,19 @@
 #define FS_HUD_FIELD_GPS_ALT    12  /* GPS altitude above DZ_Elev              */
 #define FS_HUD_FIELD_HEADING    13
 #define FS_HUD_FIELD_BARO_ALT   14  /* barometric altitude, zeroed at power-on */
+
+/* The destination, drawn instead of read: a square frame with an arrow turning
+ * inside it (forward is up) and the distance in small text underneath. Fields
+ * 5 and 6 say the same two things as numbers; this says them as a picture,
+ * which is what a pilot under canopy can take in without doing arithmetic.
+ *
+ * It deliberately IGNORES Max_Dist. Field 5 stops computing a direction beyond
+ * that limit and returns 0.0, which renders as "dead ahead" — indistinguishable
+ * from being on course, and the one failure mode you must not have in a shape
+ * whose whole job is to point. The bearing is good at any range, so the arrow
+ * draws at any range. */
+#define FS_HUD_FIELD_NAV_ARROW  15
+
 #define FS_HUD_FIELD_INFO       100 /* the status line (battery/sats/version)  */
 
 /* The status line, taken apart (v0.0.18). Field 100 draws all five pieces as

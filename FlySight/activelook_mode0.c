@@ -30,6 +30,7 @@
 #include "flight_detect.h"        // For FS_FlightDetect_InFlight()
 #include "gnss.h"                 // For FS_GNSS_GetData()
 #include "nav.h"                  // For calcDirection, calcDistance, calcRelBearing
+#include "nav_arrow.h"            // For FS_NavArrow_Build() (field 15)
 #include "vbat.h"
 #include "app_common.h"
 #include "baro.h"                 // For FS_Baro_GetData() (needs HAL types from app_common.h)
@@ -52,7 +53,7 @@
  * Then the string on the glasses says exactly which build is running — the
  * whole point of this marker (Firmware_Ver in flysight.txt is unreliable). */
 #ifndef HUD_VERSION
-#define HUD_VERSION "0.0.35-diag"
+#define HUD_VERSION "0.0.36-diag"
 #endif
 
 /* Fonts VERIFIED on ENGO 3 (this unit) via Mac BLE bench 2026-07-20 — fontList
@@ -147,6 +148,31 @@ static double LN_DistToDest(const FS_GNSS_Data_t *d) {
     const FS_Config_Data_t *cfg = FS_Config_Get();
     return (double)calcDistance(d->lat, d->lon, cfg->lat, cfg->lon); // in meters
 }
+
+/* --- The navigation arrow (field 15) -------------------------------------
+ *
+ * Its own direction, deliberately NOT LN_DirToDest: that one answers 0.0
+ * beyond Max_Dist, and an arrow cannot say "I don't know" by pointing
+ * straight ahead. See FS_HUD_FIELD_NAV_ARROW in hud_layout.h. */
+static int NavArrowDeg(const FS_GNSS_Data_t *d) {
+    const FS_Config_Data_t *cfg = FS_Config_Get();
+    return calcDirection(d->lat, d->lon, cfg->lat, cfg->lon, d->heading);
+}
+
+/* Exactly 0,0 is how the card says "no destination". FS_Config_Init leaves
+ * Lat/Lon at zero, and a value the parser rejects leaves them there too — so
+ * zero means "nobody has set one", not "steer for the Gulf of Guinea". */
+static bool NavDestSet(void) {
+    const FS_Config_Data_t *cfg = FS_Config_Get();
+    return !(cfg->lat == 0 && cfg->lon == 0);
+}
+
+/* Quantise the arrow before comparing it against the last frame. Heading
+ * wobbles by a degree constantly; without this the HUD would push a whole
+ * frame to the glasses on nothing but noise, every tick, forever. Three
+ * degrees is under two pixels at the tip of the largest box. */
+#define NAV_ARROW_STEP_DEG  3
+
 static double LN_DirToBearing(const FS_GNSS_Data_t *d) {
     const FS_Config_Data_t *cfg = FS_Config_Get();
     // Assuming bearing is configured
@@ -251,6 +277,14 @@ static FS_HudLayout_t s_layout;
 /* Last-displayed string per element, for change detection. */
 static char s_lastText[FS_HUD_MAX_ELEMENTS][AL_MODE0_MAX_TEXT];
 
+/* Same job for the navigation arrow, which is a shape and not a string: the
+ * quantised bearing last drawn, and whether one was drawn at all. Without
+ * these the arrow would only ever be redrawn when the distance caption under
+ * it happened to change — an arrow that turns in whole degrees while standing
+ * still at a fixed range would freeze. */
+static int16_t s_lastArrowDeg[FS_HUD_MAX_ELEMENTS];
+static uint8_t s_lastArrowHas[FS_HUD_MAX_ELEMENTS];
+
 /* Status snapshot + ONE shared rebuild divider. The whole status family — the
  * old one-string info line (field 100) and the five pieces it was split into in
  * v0.0.18 (101..105) — is rebuilt only every 5th tick, from the same snapshot,
@@ -281,14 +315,18 @@ static uint8_t s_hdrDivider;
    next 1 s tick, which visibly slowed HUD updates.
    -------------------------------------------------------------------------- */
 
-/* Worst case for one frame: holdFlush(HOLD) + clear, then every element as a
- * value txt AND a unit txt (v0.0.19 draws the unit as its own command), then
+/* Worst case for one frame: holdFlush(HOLD) + clear, then every element, then
  * holdFlush(FLUSH). The cap MUST cover it: an overflow would drop the closing
  * FLUSH and leave the glasses held — the HUD frozen with the link still up,
- * which is exactly the failure this project has spent months chasing. 8 elements
- * cost 8*80 = 640 bytes of static RAM more than the old cap of 16. */
-#define AL_FRAME_WORST_PKTS  (FS_HUD_MAX_ELEMENTS * 2 + 3)
-#define AL_FRAME_MAX_PKTS    24
+ * which is exactly the failure this project has spent months chasing.
+ *
+ * The dearest element is the navigation arrow (field 15): a frame, three lines
+ * for the arrow itself and the distance caption, so five. A text element costs
+ * two (value plus unit). Sizing for a layout of nothing but arrows is what keeps
+ * the #error below meaningful; the grey-level command is the +1 outside the
+ * loop, sent once per frame ahead of the first shape. */
+#define AL_FRAME_WORST_PKTS  (FS_HUD_MAX_ELEMENTS * 5 + 4)
+#define AL_FRAME_MAX_PKTS    44
 
 #if AL_FRAME_MAX_PKTS < AL_FRAME_WORST_PKTS
 #error "AL_FRAME_MAX_PKTS is smaller than a full HUD frame: the closing holdFlush(FLUSH) would be dropped and the glasses would stay held. Raise it."
@@ -350,6 +388,28 @@ static void AL_FrameAddText(int16_t x, int16_t y, uint8_t font, const char *str)
     if (AL_FrameFull()) return;
     size_t plen = AL_BuildText(s_framePkt[s_frameCount], 80,
                                x, y, 4, font, 15, str);
+    if (plen) { s_framePktLen[s_frameCount] = (uint16_t)plen; s_frameCount++; }
+}
+
+/* Append a grey-level (0x30) command. Shapes carry no colour of their own — a
+ * line is drawn in whatever level was last set, and that setting persists past
+ * a clear and past the end of the frame. One at the top of the shapes is
+ * cheaper than trusting what the previous frame left behind. */
+static void AL_FrameAddColor(uint8_t grey)
+{
+    if (AL_FrameFull()) return;
+    size_t plen = AL_BuildFrame(s_framePkt[s_frameCount], 80,
+                                AL_CMD_COLOR, &grey, 1);
+    if (plen) { s_framePktLen[s_frameCount] = (uint16_t)plen; s_frameCount++; }
+}
+
+/* Append a line (0x32) or rect (0x33) draw to the frame. */
+static void AL_FrameAddShape(uint8_t cmd, int16_t x0, int16_t y0,
+                             int16_t x1, int16_t y1)
+{
+    if (AL_FrameFull()) return;
+    size_t plen = AL_BuildShape(s_framePkt[s_frameCount], 80, cmd,
+                                x0, y0, x1, y1);
     if (plen) { s_framePktLen[s_frameCount] = (uint16_t)plen; s_frameCount++; }
 }
 
@@ -472,8 +532,11 @@ void FS_ActiveLook_Mode0_Init(void)
     FS_HudLayout_Clamp(&s_layout);
 
     /* Reset change-detection buffers so first update always sends */
-    for (int i = 0; i < FS_HUD_MAX_ELEMENTS; i++)
-        s_lastText[i][0] = '\0';
+    for (int i = 0; i < FS_HUD_MAX_ELEMENTS; i++) {
+        s_lastText[i][0]  = '\0';
+        s_lastArrowDeg[i] = 0;
+        s_lastArrowHas[i] = 0;
+    }
     battLevels[0] = '\0';   /* status snapshot: rebuild on the next tick */
     s_hdrDivider  = 0;
     AL_FrameReset();        /* discard any frame left over from a dropped link */
@@ -556,10 +619,16 @@ void FS_ActiveLook_Mode0_Update(void)
      * reading with no fix, which shows "----". A bare "km/h" beside four dashes
      * would say nothing; v0.0.18 printed no suffix there either. */
     static FS_HudQuantity_t qty[FS_HUD_MAX_ELEMENTS];
+    /* The navigation arrow's shape, resolved in the same pass: the quantised
+     * bearing, and whether there is one to draw at all. */
+    static int16_t arrowDeg[FS_HUD_MAX_ELEMENTS];
+    static uint8_t arrowHas[FS_HUD_MAX_ELEMENTS];
     for (int i = 0; i < FS_HUD_MAX_ELEMENTS; i++)
     {
-        text[i][0] = '\0';
-        qty[i]     = FS_HUD_QTY_NONE;
+        text[i][0]  = '\0';
+        qty[i]      = FS_HUD_QTY_NONE;
+        arrowDeg[i] = 0;
+        arrowHas[i] = 0;
     }
 
     for (int i = 0; i < s_layout.count; i++)
@@ -572,6 +641,39 @@ void FS_ActiveLook_Mode0_Update(void)
         }
         if (el->field == FS_HUD_FIELD_NONE)
             continue;
+
+        /* The arrow is not in the line map: it draws a shape, and its string is
+         * only the caption underneath. Same honesty rules as every GPS-derived
+         * reading — dashes, and no arrow at all, when there is no fresh fix or
+         * no destination on the card. An arrow drawn from stale coordinates
+         * would point somewhere with total confidence. */
+        if (el->field == FS_HUD_FIELD_NAV_ARROW)
+        {
+            if (gnss->gpsFix != 3 || FS_GNSS_IsStale() || !NavDestSet()) {
+                snprintf(text[i], AL_MODE0_MAX_TEXT, "----");
+                continue;
+            }
+
+            FS_HudUnitConv_t dconv =
+                FS_HudLayout_UnitConv(FS_HUD_QTY_DISTANCE, el->units);
+            double dist = LN_DistToDest(gnss) * dconv.multiplier;
+
+            /* The unit goes INSIDE the caption here, unlike every other
+             * element. FS_HudLayout_UnitDraw places a suffix past the width
+             * RESERVED for a value — five digits and a sign for a distance —
+             * which would push "m" clear of the box the caption belongs to. */
+            if (el->show_units && dconv.suffix[0] != '\0')
+                snprintf(text[i], AL_MODE0_MAX_TEXT, "%.*f %s",
+                         (int)el->decimals, dist, dconv.suffix);
+            else
+                snprintf(text[i], AL_MODE0_MAX_TEXT, "%.*f",
+                         (int)el->decimals, dist);
+
+            int deg = NavArrowDeg(gnss);
+            arrowDeg[i] = (int16_t)((deg / NAV_ARROW_STEP_DEG) * NAV_ARROW_STEP_DEG);
+            arrowHas[i] = 1;
+            continue;
+        }
 
         const AL_Mode0_LineMap_t *entry = FindLineMapEntry(el->field);
 
@@ -604,7 +706,9 @@ void FS_ActiveLook_Mode0_Update(void)
     /* --- Change detection: skip the BLE write if nothing changed --- */
     bool changed = false;
     for (int i = 0; i < s_layout.count; i++) {
-        if (strcmp(text[i], s_lastText[i]) != 0) {
+        if (strcmp(text[i], s_lastText[i]) != 0 ||
+            arrowDeg[i] != s_lastArrowDeg[i] ||
+            arrowHas[i] != s_lastArrowHas[i]) {
             changed = true;
             break;
         }
@@ -619,6 +723,8 @@ void FS_ActiveLook_Mode0_Update(void)
     for (int i = 0; i < s_layout.count; i++) {
         strncpy(s_lastText[i], text[i], AL_MODE0_MAX_TEXT - 1);
         s_lastText[i][AL_MODE0_MAX_TEXT - 1] = '\0';
+        s_lastArrowDeg[i] = arrowDeg[i];
+        s_lastArrowHas[i] = arrowHas[i];
     }
 
     /* Build the whole frame as a packet list (any still-pending older frame is
@@ -631,10 +737,46 @@ void FS_ActiveLook_Mode0_Update(void)
     AL_FrameReset();
     AL_FrameAddHoldFlush(AL_HOLD);
     AL_FrameAddClear();
+    bool greySent = false;
     for (int i = 0; i < s_layout.count; i++) {
         int16_t x, y;
         if (!FS_HudLayout_Place(&s_layout, (uint8_t)i, &x, &y))
             continue;
+
+        if (s_layout.el[i].field == FS_HUD_FIELD_NAV_ARROW) {
+            /* The box is a square as tall as a character of the element's own
+             * font, so AL_Font sizes the arrow the same way it sizes a number
+             * and a layout keeps its proportions when the wearer scales it. */
+            const int16_t size =
+                (int16_t)FS_HudLayout_FontHeight(s_layout.el[i].font);
+
+            FS_NavArrow_t arrow;
+            if (FS_NavArrow_Build(x, y, size, arrowHas[i],
+                                  (float)arrowDeg[i], &arrow)) {
+                if (!greySent) { AL_FrameAddColor(15); greySent = true; }
+                AL_FrameAddShape(AL_CMD_RECT, arrow.box_x0, arrow.box_y0,
+                                 arrow.box_x1, arrow.box_y1);
+                for (uint8_t s = 0; s < arrow.seg_count; s++)
+                    AL_FrameAddShape(AL_CMD_LINE,
+                                     arrow.seg[s].x0, arrow.seg[s].y0,
+                                     arrow.seg[s].x1, arrow.seg[s].y1);
+            }
+
+            /* The caption, centred under the box in the smallest font. The
+             * anchor is the string's LEFT edge as the wearer sees it and text
+             * grows to the wearer's right, so centring SUBTRACTS half the
+             * slack — the same mirrored arithmetic as everywhere else. */
+            const uint8_t adv = FS_HudLayout_FontAdvance(FS_HUD_UNIT_FONT);
+            const int32_t w   = (int32_t)strlen(text[i]) * (int32_t)adv;
+            int32_t slack = (int32_t)size - w;
+            if (slack < 0) slack = 0;
+
+            AL_FrameAddText((int16_t)(x - slack / 2),
+                            (int16_t)(y - size - FS_HUD_UNIT_GAP),
+                            FS_HUD_UNIT_FONT, text[i]);
+            continue;
+        }
+
         AL_FrameAddText(x, y, s_layout.el[i].font, text[i]);
 
         /* AL_Unit_Show: the unit as its own draw, in the smallest font, sitting

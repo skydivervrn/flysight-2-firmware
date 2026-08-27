@@ -9,7 +9,7 @@ CFLAGS = -Wall -Wextra -std=c99 -g
 PYTHON = python3
 
 TESTS = test_time test_activelook test_flight_detect test_engo_bind test_hud_layout \
-        test_ble_diag test_activelook_adv test_activelook_fsm test_crs
+        test_ble_diag test_activelook_adv test_activelook_fsm test_crs test_nav_arrow
 
 all: $(TESTS)
 
@@ -40,6 +40,10 @@ test_hud_layout: test_hud_layout.c ../FlySight/hud_layout.c ../FlySight/hud_layo
 # The pure half of the BLE reconnect diagnostic — ring buffer and line
 # formatter, no HAL and no FatFs, so it links straight from the host. The other
 # half (ble_diag_sink.c) is a clock and a f_write and is not testable here.
+# The HUD's navigation arrow. Pure geometry and one sinf/cosf, so -lm.
+test_nav_arrow: test_nav_arrow.c ../FlySight/nav_arrow.c ../FlySight/nav_arrow.h
+	$(CC) $(CFLAGS) -I../FlySight -o test_nav_arrow test_nav_arrow.c ../FlySight/nav_arrow.c -lm
+
 test_ble_diag: test_ble_diag.c ../FlySight/ble_diag.c ../FlySight/ble_diag.h
 	$(CC) $(CFLAGS) -DFS_BLE_DIAG=1 -I../FlySight -o test_ble_diag test_ble_diag.c ../FlySight/ble_diag.c
 
@@ -80,6 +84,7 @@ run: all
 	@echo "=== test_engo_bind ===";     ./test_engo_bind
 	@echo "=== test_hud_layout ===";   ./test_hud_layout
 	@echo "=== test_ble_diag ===";     ./test_ble_diag
+	@echo "=== test_nav_arrow ===";    ./test_nav_arrow
 	@echo "=== test_activelook_adv ==="; ./test_activelook_adv
 	@echo "=== test_activelook_fsm ==="; ./test_activelook_fsm
 	@echo "=== test_crs ===";           ./test_crs

@@ -19,6 +19,8 @@
 #define AL_CMD_VERS           0x06u
 #define AL_CMD_LUMA           0x10u
 #define AL_CMD_COLOR          0x30u
+#define AL_CMD_LINE           0x32u
+#define AL_CMD_RECT           0x33u
 #define AL_CMD_TXT            0x37u
 #define AL_CMD_HOLD_FLUSH     0x39u
 #define AL_CMD_LAYOUT_SAVE    0x60u
@@ -75,6 +77,21 @@ size_t AL_BuildText(uint8_t *out, size_t outcap,
                     int16_t x, int16_t y,
                     uint8_t rotation, uint8_t font, uint8_t color,
                     const char *str);
+
+/*
+ * Build a two-point graphics frame — line (0x32) or rect (0x33), which take
+ * the same payload:
+ *   0xFF cmd 0x00 len  x0(2,BE) y0(2,BE) x1(2,BE) y1(2,BE)  0xAA
+ *
+ * Coordinates are signed on purpose: the glasses clip, so a shape may hang off
+ * the panel. Returns the total frame length, or 0 if it won't fit in outcap.
+ *
+ * Unlike txt (0x37), these carry NO colour of their own — they use whatever
+ * grey level the last AL_CMD_COLOR (0x30) set, which persists. Send one before
+ * the first shape of a frame or inherit whatever the last frame left behind.
+ */
+size_t AL_BuildShape(uint8_t *out, size_t outcap, uint8_t cmd,
+                     int16_t x0, int16_t y0, int16_t x1, int16_t y1);
 
 /*
  * Battery percentage from millivolts, clamped to [0,100].
