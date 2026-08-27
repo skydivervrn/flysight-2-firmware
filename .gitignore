@@ -38,6 +38,7 @@ Tests/test_ble_diag
 Tests/test_activelook_adv
 Tests/test_crs
 Tests/test_activelook_fsm
+Tests/test_nav_arrow
 Tests/build_engo_bind/
 Tests/build_crs/
 Tests/build_al_fsm/
