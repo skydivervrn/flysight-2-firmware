@@ -76,4 +76,48 @@ int FS_NavArrow_Build(int16_t ax, int16_t ay, int16_t size,
  * shaft and the result reads as a line, not an arrow. */
 #define FS_NAV_ARROW_MIN_SIZE  16
 
+/*
+ * Why the box is empty, when it is.
+ *
+ * An empty frame used to cover two completely different situations, and the
+ * wearer needs to tell them apart while there is still time to act on either:
+ *
+ *   NO_FIX   the receiver has nothing fresh. Nothing to do but wait, and it
+ *            usually clears itself on the walk to the aircraft.
+ *   NO_DEST  CONFIG.TXT carries no landing zone. This one can ONLY be fixed on
+ *            the ground, from the app — which is the whole reason it is worth
+ *            a word of its own rather than the four dashes both used to get.
+ *
+ * NO_DEST outranks NO_FIX deliberately. A missing landing zone is still missing
+ * once the fix arrives, so naming the fix first would show a warning that
+ * clears itself and leaves the real problem behind, discovered at 1000 m.
+ */
+typedef enum
+{
+	FS_NAV_ARROW_OK = 0,   /* a direction can be drawn */
+	FS_NAV_ARROW_NO_DEST,  /* Lat/Lon are unset */
+	FS_NAV_ARROW_NO_FIX    /* no 3D fix, or the fix is stale */
+} FS_NavArrowState_t;
+
+/* `dest_set` and `fix_ok` are the caller's two facts, each non-zero for the
+ * happy case. Pure, so the precedence above is checked on the host. */
+FS_NavArrowState_t FS_NavArrow_State(int dest_set, int fix_ok);
+
+/*
+ * The caption under the box for a state: "" for OK (the caller writes the
+ * distance there), otherwise the warning.
+ *
+ * SHORT ON PURPOSE. The caption is drawn in the smallest font, which advances
+ * 15 px per character on a 304 px panel, so "No Landing Zone" would be 225 px
+ * — three quarters of the width, straight across whatever the wearer put next
+ * to the arrow. The words the pilot reads are in the app, which has room; the
+ * glasses get the tag that fits inside the element's own footprint.
+ */
+const char *FS_NavArrow_Caption(FS_NavArrowState_t state);
+
+/* Drawn INSIDE the frame whenever there is no arrow, in the element's own font
+ * so it scales with the box. An empty frame reads as "nothing to say yet"; a
+ * warning has to look like a warning from the corner of the eye. */
+#define FS_NAV_ARROW_WARN_GLYPH  "!"
+
 #endif /* NAV_ARROW_H_ */

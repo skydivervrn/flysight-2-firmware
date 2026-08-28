@@ -12,6 +12,7 @@
  *   larger y  = higher up                      (Y is not)
  */
 #include <stdio.h>
+#include <string.h>
 #include "nav_arrow.h"
 
 static int g_checks = 0, g_fail = 0;
@@ -121,6 +122,30 @@ int main(void)
 	 *    would BEND it, and a bent arrow still looks like a reading. */
 	CHECK(FS_NavArrow_Build(20, 30, SIZE, 1, 0.0f, &a) == 1);
 	CHECK(a.box_x0 < 0 && a.box_y0 < 0);
+
+	/* 10. Why the box is empty. The two silences used to look identical — four
+	 *     dashes for both — and they are not: waiting cures one, and only the
+	 *     app, on the ground, cures the other. */
+	CHECK(FS_NavArrow_State(1, 1) == FS_NAV_ARROW_OK);
+	CHECK(FS_NavArrow_State(0, 1) == FS_NAV_ARROW_NO_DEST);
+	CHECK(FS_NavArrow_State(1, 0) == FS_NAV_ARROW_NO_FIX);
+
+	/* 10b. Both wrong at once names the LANDING ZONE, not the fix. That is the
+	 *      state of every unit sitting indoors before a jump, and a NO FIX
+	 *      warning there would clear itself on the walk to the aircraft,
+	 *      leaving the missing landing zone to be found under canopy. */
+	CHECK(FS_NavArrow_State(0, 0) == FS_NAV_ARROW_NO_DEST);
+
+	/* 10c. Captions. OK draws no warning at all — the caller puts the distance
+	 *      there — and a warning has to stay inside the element's footprint: at
+	 *      15 px per character in the caption font, six characters is 90 px of
+	 *      a 304 px panel, where "No Landing Zone" would be 225 and would run
+	 *      straight across whatever sits beside the arrow. */
+	CHECK(FS_NavArrow_Caption(FS_NAV_ARROW_OK)[0] == '\0');
+	CHECK(!strcmp(FS_NavArrow_Caption(FS_NAV_ARROW_NO_DEST), "NO LZ"));
+	CHECK(!strcmp(FS_NavArrow_Caption(FS_NAV_ARROW_NO_FIX), "NO FIX"));
+	CHECK(strlen(FS_NavArrow_Caption(FS_NAV_ARROW_NO_DEST)) <= 6);
+	CHECK(strlen(FS_NavArrow_Caption(FS_NAV_ARROW_NO_FIX)) <= 6);
 
 	printf("%d checks, %d failures\n", g_checks, g_fail);
 	return g_fail ? 1 : 0;

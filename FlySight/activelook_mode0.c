@@ -53,7 +53,7 @@
  * Then the string on the glasses says exactly which build is running — the
  * whole point of this marker (Firmware_Ver in flysight.txt is unreliable). */
 #ifndef HUD_VERSION
-#define HUD_VERSION "0.0.36-diag"
+#define HUD_VERSION "0.0.37-diag"
 #endif
 
 /* Fonts VERIFIED on ENGO 3 (this unit) via Mac BLE bench 2026-07-20 — fontList
@@ -644,14 +644,23 @@ void FS_ActiveLook_Mode0_Update(void)
 
         /* The arrow is not in the line map: it draws a shape, and its string is
          * only the caption underneath. Same honesty rules as every GPS-derived
-         * reading — dashes, and no arrow at all, when there is no fresh fix or
-         * no destination on the card. An arrow drawn from stale coordinates
-         * would point somewhere with total confidence. */
+         * reading — no arrow at all when there is no fresh fix or no
+         * destination on the card. An arrow drawn from stale coordinates would
+         * point somewhere with total confidence.
+         *
+         * Where the other elements can say nothing more than "----", this one
+         * NAMES the reason: the two silences have different cures, and one of
+         * them has to be applied before boarding. See FS_NavArrow_State. */
         if (el->field == FS_HUD_FIELD_NAV_ARROW)
         {
-            if (gnss->gpsFix != 3 || FS_GNSS_IsStale() || !NavDestSet()) {
-                snprintf(text[i], AL_MODE0_MAX_TEXT, "----");
-                continue;
+            const FS_NavArrowState_t nav = FS_NavArrow_State(
+                NavDestSet(),
+                gnss->gpsFix == 3 && !FS_GNSS_IsStale());
+
+            if (nav != FS_NAV_ARROW_OK) {
+                snprintf(text[i], AL_MODE0_MAX_TEXT, "%s",
+                         FS_NavArrow_Caption(nav));
+                continue;   /* arrowHas stays 0 — the box gets the bang below */
             }
 
             FS_HudUnitConv_t dconv =
@@ -760,6 +769,23 @@ void FS_ActiveLook_Mode0_Update(void)
                     AL_FrameAddShape(AL_CMD_LINE,
                                      arrow.seg[s].x0, arrow.seg[s].y0,
                                      arrow.seg[s].x1, arrow.seg[s].y1);
+
+                /* No arrow means a warning, and a warning has to carry inside
+                 * the frame as well as under it: the caption is drawn in the
+                 * smallest font, and at arm's length in daylight an empty box
+                 * with small text beneath it still reads as "nothing yet".
+                 * The bang goes in the element's own font so it fills the box
+                 * at any scale, centred with the same mirrored arithmetic the
+                 * caption uses. */
+                if (!arrowHas[i]) {
+                    const uint8_t wadv =
+                        FS_HudLayout_FontAdvance(s_layout.el[i].font);
+                    int32_t wslack = (int32_t)size - (int32_t)wadv;
+                    if (wslack < 0) wslack = 0;
+                    AL_FrameAddText((int16_t)(x - wslack / 2), y,
+                                    s_layout.el[i].font,
+                                    FS_NAV_ARROW_WARN_GLYPH);
+                }
             }
 
             /* The caption, centred under the box in the smallest font. The

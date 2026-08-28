@@ -115,3 +115,22 @@ int FS_NavArrow_Build(int16_t ax, int16_t ay, int16_t size,
 	out->seg_count = FS_NAV_ARROW_SEGS;
 	return 1;
 }
+
+FS_NavArrowState_t FS_NavArrow_State(int dest_set, int fix_ok)
+{
+	/* The ORDER is the whole of this function; the reasoning is on the enum in
+	 * nav_arrow.h and belongs there, not repeated here. */
+	if (!dest_set) return FS_NAV_ARROW_NO_DEST;
+	if (!fix_ok)   return FS_NAV_ARROW_NO_FIX;
+	return FS_NAV_ARROW_OK;
+}
+
+const char *FS_NavArrow_Caption(FS_NavArrowState_t state)
+{
+	switch (state)
+	{
+	case FS_NAV_ARROW_NO_DEST: return "NO LZ";
+	case FS_NAV_ARROW_NO_FIX:  return "NO FIX";
+	default:                   return "";
+	}
+}
