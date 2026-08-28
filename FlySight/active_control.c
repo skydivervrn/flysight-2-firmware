@@ -30,6 +30,7 @@
 #include "charge.h"
 #include "config.h"
 #include "custom_app.h"
+#include "comp_corridor.h"
 #include "flight_detect.h"
 #include "gnss.h"
 #include "hum.h"
@@ -168,6 +169,13 @@ void FS_ActiveControl_Init(void)
 	// Reset takeoff/flight detector (display + log only; no behaviour change)
 	FS_FlightDetect_Init();
 
+	/* Same deal for the competition lane detector: it watches the GNSS stream
+	 * and answers questions about it. Reset here rather than when the glasses
+	 * connect, because the Validation Window can open before — or without — a
+	 * HUD, and a run that was flown with the glasses asleep must still have its
+	 * origin in EVENT.CSV. */
+	FS_CompCorridor_Init();
+
 	// Initialize saved GNSS time
 	memset(&savedTime, 0, sizeof(FS_GNSS_Time_t));
 }
@@ -259,6 +267,17 @@ void FS_ActiveControl_DataReady_Callback(void)
 		FS_Log_WriteEventAsync(
 			"Flight detected: velD=%ld mm/s, hMSL=%ld mm, numSV=%u",
 			(long)data->velD, (long)data->hMSL, (unsigned)data->numSV);
+	}
+
+	// Wingsuit competition Validation Window — same arrangement: it reads the
+	// sample the logger has already written and draws on the glasses. The line
+	// below is the only record of where THIS firmware put the origin of the
+	// Designated Flight Path, which is what a disputed score comes down to.
+	if (FS_CompCorridor_Update(data))
+	{
+		FS_Log_WriteEventAsync(
+			"Comp window open: lat=%ld lon=%ld iTOW=%lu",
+			(long)data->lat, (long)data->lon, (unsigned long)data->iTOW);
 	}
 }
 

@@ -160,6 +160,20 @@ typedef struct
 
 	int32_t  lat;
 	int32_t  lon;
+
+	/* The Ground Reference Point a Chief Judge assigns for a wingsuit
+	 * performance run: the far end of the Designated Flight Path, whose near end
+	 * the device works out for itself when the Validation Window opens. Same
+	 * degrees x 10,000,000 as Lat/Lon above, and 0,0 means unassigned.
+	 *
+	 * SEPARATE FROM Lat/Lon on purpose. Those are the landing zone, which the
+	 * arrow and the distance readout point at all the way to the ground; this is
+	 * a competition heading marker that has nothing to do with where anyone
+	 * lands. Folding them into one pair would mean a competitor could not have
+	 * both a lane and a way home on the same panel. */
+	int32_t  comp_lat;
+	int32_t  comp_lon;
+
 	int16_t  bearing;
 	uint16_t end_nav;
 	uint16_t max_dist;
@@ -168,6 +182,17 @@ typedef struct
 	char     al_id[6];
 	uint8_t  al_mode;
 	uint32_t al_rate;
+
+	/* Which job the HUD is doing: 0 = the general-purpose panel, 1 = wingsuit
+	 * competition. A profile, not a layout — the layout is already fully
+	 * described by the AL_Line elements below, and this says what the firmware
+	 * should make of them.
+	 *
+	 * Mode 1 turns field 106 from a stopwatch into the Designated Lane indicator
+	 * (see comp_corridor.h). It reuses that element rather than adding a field of
+	 * its own because the two answer the same question — "how is this run
+	 * going?" — and a competitor has one place on the panel to spare, not two. */
+	uint8_t  hud_mode;
 
 	/* HUD layout. `al_layout_valid` is 0 until the file positions something
 	 * (an AL_X / AL_Y / AL_Font key); until then the HUD draws its built-in

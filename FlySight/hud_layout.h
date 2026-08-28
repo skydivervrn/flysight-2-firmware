@@ -89,7 +89,15 @@
 #define FS_HUD_FIELD_SATS       103 /* satellites, "12"        / "N:12"        */
 #define FS_HUD_FIELD_VERSION    104 /* HUD version, "v0.0.18"                  */
 #define FS_HUD_FIELD_FD_MARK    105 /* flight-detect marker                    */
-#define FS_HUD_FIELD_STATUS_MAX 105 /* last of the status family               */
+
+/* Time since the takeoff that field 105 marks, "M:SS" (v0.0.38). It belongs to
+ * the status family because it is built from device state rather than from the
+ * line map, and because AL_Units and AL_Dec mean nothing to it — but it is NOT
+ * part of the status LINE: field 100 renders exactly the five pieces it always
+ * has. Every card in the field carries a 100, and slipping a clock into it
+ * would move the version marker that tells us which firmware is live. */
+#define FS_HUD_FIELD_FLT_TIME   106 /* time since takeoff, "M:SS" / "--:--"    */
+#define FS_HUD_FIELD_STATUS_MAX 106 /* last of the status family               */
 
 #define FS_HUD_FIELD_NONE       255 /* empty slot: draws nothing               */
 

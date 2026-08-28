@@ -27,6 +27,7 @@
 #include "config.h"               // For FS_Config_Get()
 #include "hud_layout.h"           // For the element list and the global offset
 #include "engo_bind.h"            // For FS_EngoBind_CommitIfPending()
+#include "comp_corridor.h"        // For the lane indicator (field 106, HUD_Mode 1)
 #include "flight_detect.h"        // For FS_FlightDetect_InFlight()
 #include "gnss.h"                 // For FS_GNSS_GetData()
 #include "nav.h"                  // For calcDirection, calcDistance, calcRelBearing
@@ -53,7 +54,7 @@
  * Then the string on the glasses says exactly which build is running — the
  * whole point of this marker (Firmware_Ver in flysight.txt is unreliable). */
 #ifndef HUD_VERSION
-#define HUD_VERSION "0.0.37-diag"
+#define HUD_VERSION "0.0.39-diag"
 #endif
 
 /* Fonts VERIFIED on ENGO 3 (this unit) via Mac BLE bench 2026-07-20 — fontList
@@ -77,6 +78,14 @@ const char *FS_ActiveLook_Mode0_HudVersion(void)
  * Swap to a real check/cross once verified on hardware. */
 #define FD_MARK_IDLE       "X"
 #define FD_MARK_DETECTED   "V"
+
+/* Field 106 before there is a takeoff to count from. It keeps a clock's SHAPE
+ * rather than borrowing the "----" the data rows use for "no fix yet": at arm's
+ * length the colon is what says this readout is a time, so the wearer can see
+ * the clock is present and simply has not started. What it must never show is
+ * 0:00 — a stopped clock and a clock one second into a flight would then look
+ * the same, and the difference matters to whoever is being timed. */
+#define FLT_TIME_IDLE      "--:--"
 
 /* --------------------------------------------------------------------------
    1. Unit System Definitions
@@ -285,6 +294,32 @@ static char s_lastText[FS_HUD_MAX_ELEMENTS][AL_MODE0_MAX_TEXT];
 static int16_t s_lastArrowDeg[FS_HUD_MAX_ELEMENTS];
 static uint8_t s_lastArrowHas[FS_HUD_MAX_ELEMENTS];
 
+/* And for the competition lane indicator, which is a shape too. Packed into one
+ * word so the comparison stays a single ==, and so the BLINK is part of what is
+ * compared: the whole point of a blink is a frame that differs from the last one
+ * when nothing about the flight has changed at all. */
+static uint32_t s_lastComp[FS_HUD_MAX_ELEMENTS];
+
+static uint32_t CompSig(const FS_CompInd_t *c, uint8_t is_comp, uint8_t side_on)
+{
+    return ((uint32_t)is_comp)
+         | ((uint32_t)c->active           << 1)
+         | ((uint32_t)(c->side + 1)       << 2)   /* 0, 1, 2 */
+         | ((uint32_t)c->bars             << 4)
+         | ((uint32_t)c->solid            << 9)
+         | ((uint32_t)(side_on ? 1u : 0u) << 10);
+}
+
+/* The blink, on the render tick that already exists — no timer, no change to
+ * AL_Rate. Two ticks lit, two dark: at the default 250 ms that is a 1 Hz square
+ * wave, slow enough to read a ladder through and fast enough that it cannot be
+ * mistaken for the HUD having stopped. It scales with AL_Rate, which is correct
+ * — a wearer who slows the panel down to 500 ms wants everything slower, and a
+ * blink pinned to wall-clock time would then be flashing between frames that no
+ * longer arrive. */
+static uint8_t s_blinkTick;
+#define AL_BLINK_ON()  (s_blinkTick < 2u)
+
 /* Status snapshot + ONE shared rebuild divider. The whole status family — the
  * old one-string info line (field 100) and the five pieces it was split into in
  * v0.0.18 (101..105) — is rebuilt only every 5th tick, from the same snapshot,
@@ -320,13 +355,15 @@ static uint8_t s_hdrDivider;
  * FLUSH and leave the glasses held — the HUD frozen with the link still up,
  * which is exactly the failure this project has spent months chasing.
  *
- * The dearest element is the navigation arrow (field 15): a frame, three lines
- * for the arrow itself and the distance caption, so five. A text element costs
- * two (value plus unit). Sizing for a layout of nothing but arrows is what keeps
- * the #error below meaningful; the grey-level command is the +1 outside the
- * loop, sent once per frame ahead of the first shape. */
-#define AL_FRAME_WORST_PKTS  (FS_HUD_MAX_ELEMENTS * 5 + 4)
-#define AL_FRAME_MAX_PKTS    44
+ * The dearest element is now the competition lane indicator (field 106 under
+ * HUD_Mode 1): a centre bar plus up to twelve rungs, 13 shapes. Only ONE is ever
+ * built per frame — see where compTaken is set in Mode0_Update — so the most
+ * expensive layout is seven navigation arrows (five apiece: a frame, three lines
+ * and the distance caption) and one corridor. A text element costs two, value
+ * plus unit. The grey-level command is one of the +4 outside the loop, alongside
+ * the hold, the clear and the flush. */
+#define AL_FRAME_WORST_PKTS  ((FS_HUD_MAX_ELEMENTS - 1) * 5 + FS_COMP_MAX_SHAPES + 4)
+#define AL_FRAME_MAX_PKTS    56
 
 #if AL_FRAME_MAX_PKTS < AL_FRAME_WORST_PKTS
 #error "AL_FRAME_MAX_PKTS is smaller than a full HUD frame: the closing holdFlush(FLUSH) would be dropped and the glasses would stay held. Raise it."
@@ -497,6 +534,28 @@ static void AL_StatusText(uint8_t field, uint8_t showPrefix, char *out, size_t n
     case FS_HUD_FIELD_FD_MARK:
         snprintf(out, n, "%s", s_fdMark);
         break;
+    case FS_HUD_FIELD_FLT_TIME: {
+        /* Read LIVE, not from the snapshot above, and the one member of the
+         * family that is. The snapshot exists so battery and satellite jitter
+         * cannot force a full clear+redraw every tick; a clock is the opposite
+         * case — changing is its entire job, and sampling it on the 5-tick
+         * divider (1.25 s at the default AL_Rate) would drop roughly one second
+         * in five, which on a stopwatch reads as a fault rather than as
+         * rounding. The redraw it costs is one per second at most, and only
+         * once a takeoff has been detected: before that the string is fixed and
+         * change detection sends nothing at all. */
+        uint32_t sec;
+        if (!FS_FlightDetect_ElapsedSec(&sec)) {
+            snprintf(out, n, "%s", FLT_TIME_IDLE);
+        } else {
+            /* No leading zero on the minutes, so a jump run reads 7:12 the way
+             * a watch shows it; three digits simply appear if the device is
+             * left running long enough, rather than a truncated hour. */
+            snprintf(out, n, "%u:%02u",
+                     (unsigned)(sec / 60u), (unsigned)(sec % 60u));
+        }
+        break;
+    }
     default:
         out[0] = '\0';
         break;
@@ -536,9 +595,11 @@ void FS_ActiveLook_Mode0_Init(void)
         s_lastText[i][0]  = '\0';
         s_lastArrowDeg[i] = 0;
         s_lastArrowHas[i] = 0;
+        s_lastComp[i]     = 0;
     }
     battLevels[0] = '\0';   /* status snapshot: rebuild on the next tick */
     s_hdrDivider  = 0;
+    s_blinkTick   = 0;
     AL_FrameReset();        /* discard any frame left over from a dropped link */
 }
 
@@ -574,8 +635,15 @@ void FS_ActiveLook_Mode0_Update(void)
     /* One-shot per-session proof that we actually connected (and to which serial). */
     FS_EngoBind_LogLinkedOnce();
 
-    const FS_GNSS_Data_t *gnss = FS_GNSS_GetData();
-    const FS_VBAT_Data_t *vbat = FS_VBAT_GetData();
+    const FS_GNSS_Data_t   *gnss = FS_GNSS_GetData();
+    const FS_VBAT_Data_t   *vbat = FS_VBAT_GetData();
+    const FS_Config_Data_t *cfg  = FS_Config_Get();
+
+    /* Advanced BEFORE the change-detection bail-out below: a blinking indicator
+     * is precisely the case where nothing else on the panel is moving, so a
+     * phase that only advanced on frames we already decided to send would stop
+     * dead exactly when it is needed. */
+    s_blinkTick = (uint8_t)((s_blinkTick + 1u) & 3u);
 
     /* Info/status line: takeoff marker (left-most), glasses batt, FlySight batt,
      * sat count, then the HUD version at the END (per request). The trailing
@@ -623,17 +691,60 @@ void FS_ActiveLook_Mode0_Update(void)
      * bearing, and whether there is one to draw at all. */
     static int16_t arrowDeg[FS_HUD_MAX_ELEMENTS];
     static uint8_t arrowHas[FS_HUD_MAX_ELEMENTS];
+    /* The competition lane indicator, resolved in the same pass: its state, a
+     * flag saying this element is one at all (so the frame builder knows not to
+     * draw text there), and whether the ladder is lit this frame. */
+    static FS_CompInd_t comp[FS_HUD_MAX_ELEMENTS];
+    static uint8_t      compEl[FS_HUD_MAX_ELEMENTS];
+    static uint8_t      compOn[FS_HUD_MAX_ELEMENTS];
     for (int i = 0; i < FS_HUD_MAX_ELEMENTS; i++)
     {
         text[i][0]  = '\0';
         qty[i]      = FS_HUD_QTY_NONE;
         arrowDeg[i] = 0;
         arrowHas[i] = 0;
+        memset(&comp[i], 0, sizeof(comp[i]));
+        compEl[i]   = 0;
+        compOn[i]   = 0;
     }
+
+    /* At most one lane indicator per frame. Twelve rungs and a bar are thirteen
+     * packets, and a frame that outgrew AL_FRAME_MAX_PKTS would lose its closing
+     * FLUSH and freeze the glasses with the link still up. Nothing is lost by
+     * the cap: a second copy of the indicator is the same lane. A card that asks
+     * for two gets the corridor in the first slot and keeps the stopwatch in the
+     * rest, which at least says something the first one does not. */
+    bool compTaken = false;
 
     for (int i = 0; i < s_layout.count; i++)
     {
         const FS_HudElement_t *el = &s_layout.el[i];
+
+        /* Field 106 under HUD_Mode 1 is a picture rather than a reading: the
+         * Designated Lane, as a ladder about a centre bar. See comp_corridor.h
+         * for the rules and for what each part of it means.
+         *
+         * The deviation is held to the same standard as every other GPS-derived
+         * reading on this panel — a 3D fix, a receiver that is still talking,
+         * and a Ground Reference Point on the card. Short of any of those the
+         * indicator falls back to its bare centre bar, which says "the window is
+         * open and I cannot place you" rather than freezing the last ladder,
+         * which would be a competitor steering on a number from a minute ago. */
+        if (el->field == FS_HUD_FIELD_FLT_TIME && cfg->hud_mode == 1 && !compTaken)
+        {
+            float dev = 0.0f;
+            const int haveDev =
+                gnss->gpsFix == 3 && !FS_GNSS_IsStale() &&
+                FS_CompCorridor_RefSet(cfg->comp_lat, cfg->comp_lon) &&
+                FS_CompCorridor_Deviation(cfg->comp_lat, cfg->comp_lon, &dev);
+
+            FS_CompCorridor_Indicator(FS_CompCorridor_Started(), haveDev, dev,
+                                      &comp[i]);
+            compEl[i]  = 1;
+            compOn[i]  = (!comp[i].blink || AL_BLINK_ON()) ? 1 : 0;
+            compTaken  = true;
+            continue;   /* text[i] stays empty: nothing is written in this slot */
+        }
 
         if (FS_HudLayout_FieldIsStatus(el->field)) {
             AL_StatusText(el->field, el->show_units, text[i], AL_MODE0_MAX_TEXT);
@@ -717,7 +828,8 @@ void FS_ActiveLook_Mode0_Update(void)
     for (int i = 0; i < s_layout.count; i++) {
         if (strcmp(text[i], s_lastText[i]) != 0 ||
             arrowDeg[i] != s_lastArrowDeg[i] ||
-            arrowHas[i] != s_lastArrowHas[i]) {
+            arrowHas[i] != s_lastArrowHas[i] ||
+            CompSig(&comp[i], compEl[i], compOn[i]) != s_lastComp[i]) {
             changed = true;
             break;
         }
@@ -734,6 +846,7 @@ void FS_ActiveLook_Mode0_Update(void)
         s_lastText[i][AL_MODE0_MAX_TEXT - 1] = '\0';
         s_lastArrowDeg[i] = arrowDeg[i];
         s_lastArrowHas[i] = arrowHas[i];
+        s_lastComp[i]     = CompSig(&comp[i], compEl[i], compOn[i]);
     }
 
     /* Build the whole frame as a packet list (any still-pending older frame is
@@ -751,6 +864,31 @@ void FS_ActiveLook_Mode0_Update(void)
         int16_t x, y;
         if (!FS_HudLayout_Place(&s_layout, (uint8_t)i, &x, &y))
             continue;
+
+        if (compEl[i]) {
+            /* Height from the element's own font, so the ladder scales with the
+             * numbers beside it exactly as the arrow's box does. Width follows
+             * from the height inside comp_corridor.c: 72 px at the 24 px status
+             * font, which is what the "--:--" clock in this slot occupied.
+             *
+             * Nothing at all is emitted before the Validation Window opens — not
+             * an empty box, not a placeholder. The centre bar APPEARING is the
+             * signal the competitor is waiting for, and it cannot be a signal if
+             * something was already sitting there. */
+            FS_CompDraw_t lane;
+            const int16_t size =
+                (int16_t)FS_HudLayout_FontHeight(s_layout.el[i].font);
+
+            if (FS_CompCorridor_Build(x, y, size, &comp[i], compOn[i], &lane)) {
+                if (!greySent) { AL_FrameAddColor(15); greySent = true; }
+                for (uint8_t s = 0; s < lane.count; s++)
+                    AL_FrameAddShape(lane.shape[s].solid ? AL_CMD_RECTF
+                                                         : AL_CMD_LINE,
+                                     lane.shape[s].x0, lane.shape[s].y0,
+                                     lane.shape[s].x1, lane.shape[s].y1);
+            }
+            continue;
+        }
 
         if (s_layout.el[i].field == FS_HUD_FIELD_NAV_ARROW) {
             /* The box is a square as tall as a character of the element's own

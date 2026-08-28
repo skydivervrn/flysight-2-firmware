@@ -20,7 +20,8 @@
 #define AL_CMD_LUMA           0x10u
 #define AL_CMD_COLOR          0x30u
 #define AL_CMD_LINE           0x32u
-#define AL_CMD_RECT           0x33u
+#define AL_CMD_RECT           0x33u  /* outline only  */
+#define AL_CMD_RECTF          0x34u  /* filled        */
 #define AL_CMD_TXT            0x37u
 #define AL_CMD_HOLD_FLUSH     0x39u
 #define AL_CMD_LAYOUT_SAVE    0x60u
@@ -79,8 +80,8 @@ size_t AL_BuildText(uint8_t *out, size_t outcap,
                     const char *str);
 
 /*
- * Build a two-point graphics frame — line (0x32) or rect (0x33), which take
- * the same payload:
+ * Build a two-point graphics frame — line (0x32), rect (0x33) or rectf (0x34),
+ * which take the same payload:
  *   0xFF cmd 0x00 len  x0(2,BE) y0(2,BE) x1(2,BE) y1(2,BE)  0xAA
  *
  * Coordinates are signed on purpose: the glasses clip, so a shape may hang off

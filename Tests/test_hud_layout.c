@@ -144,20 +144,22 @@ int main(void)
 	CHECK(FS_HudLayout_FieldNeedsFix(FS_HUD_FIELD_HSPEED) == 1);
 	CHECK(FS_HudLayout_FieldNeedsFix(FS_HUD_FIELD_GPS_ALT) == 1);
 
-	/* 9. The status line taken apart (v0.0.18): 101..105 are status fields, and
-	 *    none of them waits for a fix — the satellite count in particular is the
-	 *    reading a wearer wants BEFORE the fix arrives, so it must never be
-	 *    treated as GPS-derived and blanked to "----". */
+	/* 9. The status line taken apart (v0.0.18), plus the takeoff clock added in
+	 *    v0.0.38: 101..106 are status fields, and none of them waits for a fix —
+	 *    the satellite count in particular is the reading a wearer wants BEFORE
+	 *    the fix arrives, so it must never be treated as GPS-derived and blanked
+	 *    to "----", and the clock runs off iTOW rather than off a position. */
 	for (uint8_t f = FS_HUD_FIELD_INFO; f <= FS_HUD_FIELD_STATUS_MAX; f++)
 	{
 		CHECK(FS_HudLayout_FieldIsStatus(f) == 1);
 		CHECK(FS_HudLayout_FieldNeedsFix(f) == 0);
 	}
-	CHECK(FS_HUD_FIELD_STATUS_MAX == 105);
-	/* Nothing outside 100..105 joins the family by accident — 14 is the
+	CHECK(FS_HUD_FIELD_STATUS_MAX == 106);
+	CHECK(FS_HudLayout_FieldIsStatus(FS_HUD_FIELD_FLT_TIME) == 1);
+	/* Nothing outside 100..106 joins the family by accident — 14 is the
 	 * barometric altitude, an ordinary element that happens to need no fix. */
 	CHECK(FS_HudLayout_FieldIsStatus(99) == 0);
-	CHECK(FS_HudLayout_FieldIsStatus(106) == 0);
+	CHECK(FS_HudLayout_FieldIsStatus(107) == 0);
 	CHECK(FS_HudLayout_FieldIsStatus(FS_HUD_FIELD_BARO_ALT) == 0);
 	CHECK(FS_HudLayout_FieldIsStatus(FS_HUD_FIELD_NONE) == 0);
 

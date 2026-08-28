@@ -247,6 +247,15 @@ static const char defaultConfig[] =
 		"Max_Dist:  10000        ; Maximum distance (m)\n"
 		"Min_Angle: 5            ; Minimum angle for direction (deg)\n"
 		"\n"
+		"; Wingsuit competition. The Ground Reference Point the Chief\n"
+		"; Judge assigns: the far end of the Designated Flight Path.\n"
+		"; The near end is where you are 9 s after first reaching 10 m/s\n"
+		"; down, which the device works out for itself. Only used when\n"
+		"; HUD_Mode is 1. Leave both at 0 if there is no assigned point.\n"
+		"\n"
+		"Comp_Lat:  0            ; Reference latitude (deg * 10,000,000)\n"
+		"Comp_Lon:  0            ; Reference longitude (deg * 10,000,000)\n"
+		"\n"
 		"; ActiveLook interface\n"
 		"\n"
 		"AL_ID:    000000 ; ActiveLook device ID\n"
@@ -256,6 +265,14 @@ static const char defaultConfig[] =
 		"AL_Rate:     250 ; ActiveLook rate (ms)\n"
 		"                 ;   4 Hz. Raise it (333, 500) if the glasses\n"
 		"                 ;   ever stop refreshing mid-flight.\n"
+		"HUD_Mode:      0 ; What the HUD is for\n"
+		"                 ;   0 = Default\n"
+		"                 ;   1 = Wingsuit competition. Turns line 106\n"
+		"                 ;       from a stopwatch into the Designated\n"
+		"                 ;       Lane indicator: nothing until the\n"
+		"                 ;       Validation Window opens, then a centre\n"
+		"                 ;       bar plus one bar per 25 m off the path\n"
+		"                 ;       to Comp_Lat / Comp_Lon. Needs those two.\n"
 		"\n"
 		"; HUD position. Shifts the whole picture, for glasses that sit a\n"
 		"; little off-centre. Both are in pixels, as the WEARER sees it:\n"
@@ -293,6 +310,10 @@ static const char defaultConfig[] =
 		"                 ;   101 = Glasses battery      102 = FlySight battery\n"
 		"                 ;   103 = Satellites           104 = HUD version\n"
 		"                 ;   105 = Takeoff marker\n"
+		"                 ;   106 = Time since takeoff, M:SS. Reads\n"
+		"                 ;         --:-- until a takeoff is detected.\n"
+		"                 ;         Under HUD_Mode 1 this slot draws the\n"
+		"                 ;         competition lane indicator instead.\n"
 		"AL_Units:      0 ; ActiveLook units\n"
 		"                 ;   0 = metric      1 = imperial\n"
 		"                 ;   Or name one outright:\n"
@@ -412,6 +433,13 @@ void FS_Config_Init(void)
 
 	config.lat            = 0;
 	config.lon            = 0;
+
+	/* Unassigned. HUD_Mode 1 with no Ground Reference Point draws the centre bar
+	 * and nothing beside it — the window is open, the lane is not known — rather
+	 * than centring the lane on the Gulf of Guinea. */
+	config.comp_lat       = 0;
+	config.comp_lon       = 0;
+
 	config.bearing        = 0;
 	config.end_nav        = 0;
 	config.max_dist       = 10000;
@@ -428,6 +456,10 @@ void FS_Config_Init(void)
 	 * failure mode of over-driving the command buffer), put AL_Rate back to 333
 	 * in CONFIG.TXT before blaming anything else. */
 	config.al_rate        = 250;
+
+	/* The general-purpose panel. An untouched card, and every card written
+	 * before this key existed, must keep the behaviour it has today. */
+	config.hud_mode       = 0;
 
 	/* Start from the built-in layout so an element the file mentions without
 	 * coordinates still has somewhere to land, and so a file with no AL_Line
@@ -565,6 +597,12 @@ FS_Config_Result_t FS_Config_Read(const char *filename)
 
 		HANDLE_VALUE("Lat",       config.lat,          val, val >= -900000000 && val <= 900000000);
 		HANDLE_VALUE("Lon",       config.lon,          val, val >= -1800000000 && val <= 1800000000);
+
+		/* Same limits as Lat/Lon: it is the same kind of number, and a card that
+		 * gets one of them wrong should fail the same way. */
+		HANDLE_VALUE("Comp_Lat",  config.comp_lat,     val, val >= -900000000 && val <= 900000000);
+		HANDLE_VALUE("Comp_Lon",  config.comp_lon,     val, val >= -1800000000 && val <= 1800000000);
+
 		HANDLE_VALUE("Bearing",   config.bearing,      val, val >= 0 && val <= 360);
 		HANDLE_VALUE("End_Nav",   config.end_nav,      val * 1000, TRUE);
 		HANDLE_VALUE("Max_Dist",  config.max_dist,     val, val >= 0 && val <= 10000);
@@ -572,6 +610,11 @@ FS_Config_Result_t FS_Config_Read(const char *filename)
 
 		HANDLE_VALUE("AL_Mode",   config.al_mode,      val, val >= 0 && val <= 1);
 		HANDLE_VALUE("AL_Rate",   config.al_rate,      val, val >= 100);
+
+		/* Out-of-range values are DROPPED, not folded to the nearest profile:
+		 * a card asking for a mode this build has never heard of is one written
+		 * by a newer app, and the default panel is the safe reading of it. */
+		HANDLE_VALUE("HUD_Mode",  config.hud_mode,     val, val >= 0 && val <= 1);
 
 		#undef HANDLE_VALUE
 

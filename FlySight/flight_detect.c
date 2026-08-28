@@ -30,11 +30,19 @@
 #define FS_FD_FREEFALL_MPS      10.0
 #define FS_FD_FREEFALL_HOLD_MS  1000u
 
+/* iTOW counts milliseconds into the GPS week and restarts at zero every
+ * Sunday 00:00:00 GPS time. One week is the ONLY backwards step in that number
+ * with a defined meaning, which is what makes the correction in ElapsedSec
+ * exact rather than a heuristic. */
+#define FS_FD_WEEK_MS           604800000u
+
 static bool     s_inFlight;
 static bool     s_climbActive;     /* currently accumulating a climb window  */
 static uint32_t s_climbStartTOW;   /* iTOW (ms) when the climb window opened  */
 static bool     s_ffActive;        /* currently accumulating a freefall window*/
 static uint32_t s_ffStartTOW;
+static uint32_t s_takeoffTOW;      /* iTOW of the sample that latched         */
+static uint32_t s_lastTOW;         /* iTOW of the newest sample since then    */
 
 void FS_FlightDetect_Init(void)
 {
@@ -43,6 +51,8 @@ void FS_FlightDetect_Init(void)
 	s_climbStartTOW = 0;
 	s_ffActive      = false;
 	s_ffStartTOW    = 0;
+	s_takeoffTOW    = 0;
+	s_lastTOW       = 0;
 }
 
 bool FS_FlightDetect_InFlight(void)
@@ -50,10 +60,45 @@ bool FS_FlightDetect_InFlight(void)
 	return s_inFlight;
 }
 
+bool FS_FlightDetect_ElapsedSec(uint32_t *out)
+{
+	if (out == NULL || !s_inFlight) return false;
+
+	uint32_t ms = s_lastTOW - s_takeoffTOW;
+
+	/* A forward delta is small — days, at the very worst — so anything that
+	 * comes out at or above a full week is the unsigned wrap of a BACKWARDS
+	 * step, and the week rollover is what puts one there. Adding a week back
+	 * (in uint32, wrapping again) recovers the true interval exactly:
+	 *   takeoff 604700000, now 100000 -> raw 3690367296, +week -> 200000 ms.
+	 *
+	 * A backwards step that is NOT a rollover — the receiver cold-starting
+	 * mid-flight and re-deriving its clock — leaves a number close to a whole
+	 * week, i.e. hundreds of hours on the panel. That is deliberate: it is
+	 * visibly broken, where clamping it or silently re-anchoring would show a
+	 * plausible time that is wrong, and a competitor timing a run off a
+	 * plausible wrong clock is worse off than one who can see the fault. */
+	if (ms >= FS_FD_WEEK_MS) ms += FS_FD_WEEK_MS;
+
+	*out = ms / 1000u;
+	return true;
+}
+
 bool FS_FlightDetect_Update(const FS_GNSS_Data_t *d)
 {
-	/* Already latched, or no usable sample: never re-fire. */
-	if (s_inFlight) return false;
+	/* Already latched: nothing left to detect, but the elapsed clock still has
+	 * to be fed. iTOW is stamped on EVERY complete sample (gnss.c
+	 * FS_GNSS_ReceiveMessage sets it before dispatching the callback), fix or no
+	 * fix, and the receiver keeps its time of week through a dropout — so the
+	 * clock keeps running while the sky is obstructed instead of freezing over
+	 * exactly the part of a jump the wearer is watching it for. */
+	if (s_inFlight)
+	{
+		if (d != NULL) s_lastTOW = d->iTOW;
+		return false;
+	}
+
+	/* No usable sample. */
 	if (d == NULL || d->gpsFix != 3)
 	{
 		/* Reset sustain windows on fix loss so dropouts don't accumulate; the
@@ -76,7 +121,9 @@ bool FS_FlightDetect_Update(const FS_GNSS_Data_t *d)
 		}
 		else if ((uint32_t)(tow - s_climbStartTOW) >= FS_FD_CLIMB_HOLD_MS)
 		{
-			s_inFlight = true;
+			s_inFlight   = true;
+			s_takeoffTOW = tow;                        /* clock epoch          */
+			s_lastTOW    = tow;
 			return true;                               /* rising edge          */
 		}
 	}
@@ -95,7 +142,9 @@ bool FS_FlightDetect_Update(const FS_GNSS_Data_t *d)
 		}
 		else if ((uint32_t)(tow - s_ffStartTOW) >= FS_FD_FREEFALL_HOLD_MS)
 		{
-			s_inFlight = true;
+			s_inFlight   = true;
+			s_takeoffTOW = tow;                        /* clock epoch          */
+			s_lastTOW    = tow;
 			return true;                               /* rising edge          */
 		}
 	}
