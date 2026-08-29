@@ -54,7 +54,7 @@
  * Then the string on the glasses says exactly which build is running — the
  * whole point of this marker (Firmware_Ver in flysight.txt is unreliable). */
 #ifndef HUD_VERSION
-#define HUD_VERSION "0.0.39-diag"
+#define HUD_VERSION "0.0.40-diag"
 #endif
 
 /* Fonts VERIFIED on ENGO 3 (this unit) via Mac BLE bench 2026-07-20 — fontList
@@ -730,7 +730,30 @@ void FS_ActiveLook_Mode0_Update(void)
          * indicator falls back to its bare centre bar, which says "the window is
          * open and I cannot place you" rather than freezing the last ladder,
          * which would be a competitor steering on a number from a minute ago. */
-        if (el->field == FS_HUD_FIELD_FLT_TIME && cfg->hud_mode == 1 && !compTaken)
+        /* The top line has two jobs and only room for one at a time, so it
+         * SWAPS at takeoff rather than showing both crammed together.
+         *
+         * On the ground the wearer needs the housekeeping: which firmware is
+         * live, how much battery there is, how many satellites. In the air
+         * none of that can be acted on — the aircraft door has closed on any
+         * decision it could inform — and the strip is worth more as a clock
+         * and a lane.
+         *
+         * So the status family blanks itself once flight is detected, and the
+         * clock says nothing until then. One card carries both; the wearer
+         * places each once and never touches the layout again. */
+        if (FS_HudLayout_FieldIsStatus(el->field) && FS_FlightDetect_InFlight())
+            continue;
+        if (el->field == FS_HUD_FIELD_FLT_TIME && !FS_FlightDetect_InFlight())
+            continue;
+
+        /* The corridor only replaces the clock once it HAS a corridor. Between
+         * takeoff and the Validation Window opening — the climb, the run-in,
+         * the first nine seconds of the dive — there is no origin to draw a
+         * lane about, and a blank strip through the whole ride up would be
+         * worse than the clock that was already there. */
+        if (el->field == FS_HUD_FIELD_FLT_TIME && cfg->hud_mode == 1 &&
+            FS_CompCorridor_Started() && !compTaken)
         {
             float dev = 0.0f;
             const int haveDev =
