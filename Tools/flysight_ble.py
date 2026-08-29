@@ -130,7 +130,9 @@ BATCHES = {
     "dac40d25": "B4",
     "3157e028": "B5",
     "8ee78709": "B6",
-    "b36f45a1": "B7",
+    "72816871": "B7",
+    "b36f45a1": "B8",
+    "df8afa69": "B9",
 }
 
 FLYSIGHT_TXT = "/flysight.txt"

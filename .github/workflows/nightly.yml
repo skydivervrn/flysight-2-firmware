@@ -77,7 +77,7 @@ jobs:
           cp build/UserApp.bin Deploy/Firmware_As_Built/UserApp.bin
           mkdir -p out
           cd Deploy
-          for B in B2 B3 B4 B5 B6 B7; do
+          for B in B2 B3 B4 B5 B6 B7 B8 B9; do
             k=$(echo "$B" | tr 'A-Z' 'a-z')
             ../.venv/bin/python -c "import deploy_firmware as d; d.encrypt_firmware_with_key('Firmware_As_Built/UserApp.bin','UserApp','Public_Keys/pub_key_${k}.bin','${B}')"
             cp "Firmware_To_Deploy/${B}_UserApp.sfb" "../out/FlySight2-ENGO-HUD-${B}.sfb"
