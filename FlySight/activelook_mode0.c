@@ -54,7 +54,7 @@
  * Then the string on the glasses says exactly which build is running — the
  * whole point of this marker (Firmware_Ver in flysight.txt is unreliable). */
 #ifndef HUD_VERSION
-#define HUD_VERSION "0.0.40"
+#define HUD_VERSION "0.0.41"
 #endif
 
 /* Fonts VERIFIED on ENGO 3 (this unit) via Mac BLE bench 2026-07-20 — fontList
@@ -731,20 +731,12 @@ void FS_ActiveLook_Mode0_Update(void)
          * open and I cannot place you" rather than freezing the last ladder,
          * which would be a competitor steering on a number from a minute ago. */
         /* The top line has two jobs and only room for one at a time, so it
-         * SWAPS at takeoff rather than showing both crammed together.
-         *
-         * On the ground the wearer needs the housekeeping: which firmware is
-         * live, how much battery there is, how many satellites. In the air
-         * none of that can be acted on — the aircraft door has closed on any
-         * decision it could inform — and the strip is worth more as a clock
-         * and a lane.
-         *
-         * So the status family blanks itself once flight is detected, and the
-         * clock says nothing until then. One card carries both; the wearer
-         * places each once and never touches the layout again. */
-        if (FS_HudLayout_FieldIsStatus(el->field) && FS_FlightDetect_InFlight())
-            continue;
-        if (el->field == FS_HUD_FIELD_FLT_TIME && !FS_FlightDetect_InFlight())
+         * SWAPS at takeoff rather than showing both crammed together. The rule
+         * and the reasoning live on FS_HudLayout_FieldVisible, in the pure
+         * module a host test can link — this file cannot be linked by one, and
+         * when the swap was written as two conditions HERE they contradicted
+         * each other for the clock and blanked it in both states. */
+        if (!FS_HudLayout_FieldVisible(el->field, FS_FlightDetect_InFlight()))
             continue;
 
         /* The corridor only replaces the clock once it HAS a corridor. Between

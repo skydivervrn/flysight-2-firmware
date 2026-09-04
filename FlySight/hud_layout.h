@@ -218,8 +218,37 @@ int FS_HudLayout_FieldNeedsFix(uint8_t field);
 
 /* True for the status line and the five pieces it was split into (100..105):
  * the fields the renderer builds from device state rather than from the line
- * map, and for which AL_Units / AL_Dec are meaningless. */
+ * map, and for which AL_Units / AL_Dec are meaningless. NB the clock, 106, is
+ * in this family too — see FS_HUD_FIELD_FLT_TIME — so anything that means "the
+ * housekeeping strip" has to exclude it explicitly. Forgetting that is what
+ * made the clock unreachable in v0.0.40; FS_HudLayout_FieldVisible now owns
+ * the distinction so no caller has to remember it. */
 int FS_HudLayout_FieldIsStatus(uint8_t field);
+
+/*
+ * Whether `field` should be drawn at all, given whether flight is under way.
+ *
+ * The top strip has two jobs and room for one at a time, so it SWAPS at
+ * takeoff: on the ground the housekeeping — which firmware is live, how much
+ * battery, how many satellites — and in the air the clock, or, in competition
+ * mode, the Designated Lane indicator drawn in the clock's place. One card
+ * carries both elements at the same spot; the wearer places each once and
+ * never touches the layout again.
+ *
+ * The rule, and the whole of the function:
+ *
+ *   field 106 (the clock)        visible ONLY in flight
+ *   fields 100..105 (the strip)  visible ONLY on the ground
+ *   everything else              always visible
+ *
+ * This lives here, in the pure module, rather than as two conditions in the
+ * renderer, because the renderer cannot be linked by a host test — and that is
+ * exactly how v0.0.40 shipped: the two conditions there contradicted each
+ * other for 106, which belongs to the status family, and blanked the clock in
+ * BOTH states with nothing to fail. See Tests/test_hud_layout.c, "the top line
+ * swaps at takeoff".
+ */
+int FS_HudLayout_FieldVisible(uint8_t field, int in_flight);
 
 /* Multiplier and suffix for `qty` displayed in `units` (an FS_HUD_UNITS_*
  * value, already clamped). A unit that does not apply to the quantity — km on

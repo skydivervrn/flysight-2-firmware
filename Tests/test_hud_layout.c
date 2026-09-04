@@ -163,6 +163,33 @@ int main(void)
 	CHECK(FS_HudLayout_FieldIsStatus(FS_HUD_FIELD_BARO_ALT) == 0);
 	CHECK(FS_HudLayout_FieldIsStatus(FS_HUD_FIELD_NONE) == 0);
 
+	/* 9a. THE TOP LINE SWAPS AT TAKEOFF.
+	 *
+	 *     v0.0.40 shipped this as two conditions in the renderer: "a status
+	 *     field blanks in flight" and "the clock blanks on the ground". The
+	 *     clock IS a status field, so the pair cancelled and 106 was drawn in
+	 *     NEITHER state — no clock, and no Designated Lane indicator, which is
+	 *     drawn in its place. Nothing failed, because the renderer pulls in the
+	 *     HAL and no host test can link it.
+	 *
+	 *     So the decision moved into the pure module, and this is the truth
+	 *     table it owes: each of the two elements visible in exactly one state,
+	 *     every ordinary field visible in both. Break either half and this
+	 *     fails on the host, before a competitor finds it in the air. */
+	CHECK(FS_HudLayout_FieldVisible(FS_HUD_FIELD_FLT_TIME, 1) == 1);
+	CHECK(FS_HudLayout_FieldVisible(FS_HUD_FIELD_FLT_TIME, 0) == 0);
+	for (uint8_t f = FS_HUD_FIELD_INFO; f < FS_HUD_FIELD_FLT_TIME; f++)
+	{
+		CHECK(FS_HudLayout_FieldVisible(f, 0) == 1);
+		CHECK(FS_HudLayout_FieldVisible(f, 1) == 0);
+	}
+	/* An ordinary reading does not care whether the aircraft has left: the
+	 * swap is the top strip's business and nothing else's. */
+	CHECK(FS_HudLayout_FieldVisible(FS_HUD_FIELD_BARO_ALT, 0) == 1);
+	CHECK(FS_HudLayout_FieldVisible(FS_HUD_FIELD_BARO_ALT, 1) == 1);
+	CHECK(FS_HudLayout_FieldVisible(FS_HUD_FIELD_NAV_ARROW, 0) == 1);
+	CHECK(FS_HudLayout_FieldVisible(FS_HUD_FIELD_NAV_ARROW, 1) == 1);
+
 	/* 9b. Each piece lands on the status line's own small-font defaults, not on
 	 *     the 64 px defaults of whatever data slot it happens to occupy — a
 	 *     battery percentage at 64 px would fill the panel. */

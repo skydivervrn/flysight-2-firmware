@@ -171,6 +171,22 @@ int FS_HudLayout_FieldIsStatus(uint8_t field)
 	return (field >= FS_HUD_FIELD_INFO && field <= FS_HUD_FIELD_STATUS_MAX);
 }
 
+int FS_HudLayout_FieldVisible(uint8_t field, int in_flight)
+{
+	/* The clock FIRST, and its own line. It is a status field by family — the
+	 * renderer builds it from device state, not from the line map — but it is
+	 * the one member of that family whose whole purpose is the air. Testing it
+	 * before the family is what keeps the two rules from cancelling out, which
+	 * is precisely how v0.0.40 lost it. */
+	if (field == FS_HUD_FIELD_FLT_TIME) return in_flight ? 1 : 0;
+
+	/* The rest of the strip is ground-only: in the air none of it can be acted
+	 * on, the aircraft door having closed on any decision it could inform. */
+	if (FS_HudLayout_FieldIsStatus(field)) return in_flight ? 0 : 1;
+
+	return 1;
+}
+
 int FS_HudLayout_FieldNeedsFix(uint8_t field)
 {
 	if (FS_HudLayout_FieldIsStatus(field)) return 0;

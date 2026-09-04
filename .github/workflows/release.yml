@@ -75,17 +75,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cat > notes.md <<'EOF'
-          Stable firmware tested on FlySight 2 and ENGO 3 hardware.
+          Hotfix. Anyone on v0.0.40 should update.
 
-          Highlights:
-          - reliable Android pairing and reconnects using a persistent per-device BLE identity;
-          - ENGO reconnect and display recovery across Active → Stop → Active transitions;
-          - browser and Groundrush over-the-air firmware installation support;
-          - configurable HUD layout and position controls.
+          **The top line comes back.** On v0.0.40 the strip across the top of the HUD goes blank at takeoff and nothing replaces it. It was meant to swap: the housekeeping on the ground — battery, satellites, which firmware is live — and in the air the flight clock, or, in wingsuit competition mode, the Designated Lane indicator drawn in the clock's place. Two conditions in the renderer contradicted each other for the clock, which belongs to the status family, so it was skipped on the ground AND in the air. Neither the clock nor the lane indicator could ever draw.
 
-          Choose the file matching the `Pubkey_X` batch in `FLYSIGHT.TXT`, rename it to `APP.SFB`, and install it using Groundrush, the web flasher, or the orange-light USB bootloader. The wrong batch is safely ignored.
+          The rule now lives in the pure layout module as one function, with a truth table around it in the host tests. The renderer cannot be linked by a test — which is exactly how v0.0.40 shipped with nothing failing.
 
-          Batches B2-B9 are covered, every key taken from the upstream repository — Michael Cooper published B7, B8 and B9 on 2026-08-28. The batch we had been calling B7 was in fact B8; its key file is byte-identical to the one now published under that name, so images built before this release were correct for the device and only misnamed.
+          Verified by the host test suite; **not yet flown.** The lane indicator in particular has still never been seen in the air. It stays display-only: it changes nothing about logging, the GNSS rate or the recorded track.
+
+          Choose the file matching the `Pubkey_X` batch in `FLYSIGHT.TXT`, rename it to `APP.SFB`, and install it using Groundrush, the web flasher, or the orange-light USB bootloader. The wrong batch is safely ignored. Batches B2-B9 are covered.
           EOF
           gh release create "$GITHUB_REF_NAME" \
             --title "$GITHUB_REF_NAME" \
