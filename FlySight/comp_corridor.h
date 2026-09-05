@@ -58,6 +58,48 @@
 #define FS_COMP_TRIGGER_MPS      10.0
 #define FS_COMP_WINDOW_DELAY_MS  9000u
 
+/*
+ * ...and the speed that says the 10 m/s was a FALL rather than an aircraft.
+ *
+ * 10 m/s down is 2000 ft/min, which a jump ship reaches easily. On 2026-09-05
+ * a pilot took the lane run high and let down before the exit, and the descent
+ * crossed 10 m/s twice — for 6.6 s peaking at 14.5 m/s, and for 10.6 s peaking
+ * at 13.4. Either would have opened the window in the aircraft: the first one
+ * put the origin 1111 m and four and a half minutes from where the exit was.
+ *
+ * Duration cannot tell the two apart — the second episode outlasted the nine
+ * seconds. Speed can. Measured over three jumps from that day:
+ *
+ *   aircraft, letting down    peak 14.5, 13.4 m/s
+ *   exits                     peak 30.8, 33.0, 32.2 m/s
+ *
+ * So the peak within the nine seconds has to reach this, checked at the moment
+ * the origin would be latched — the confirmation arrives seconds before that
+ * (10 to 20 m/s took 2.6 s on the exit measured), so nothing about WHERE the
+ * origin falls changes. An arming that fails it is dropped and the detector
+ * goes back to watching, which is the only way to catch the real exit after a
+ * false one.
+ *
+ * NB the canopy also crosses 10 m/s, in spirals, peaking 19.5 m/s on one of
+ * those tracks — closer to this number than the aircraft ever got. It cannot
+ * arm anything: the window latches once and FS_CompCorridor_Update returns on
+ * s_started for the rest of the flight. The exception is active mode being
+ * re-entered mid-descent, which calls FS_CompCorridor_Init and clears that
+ * latch; a spiral half a metre per second faster than the one measured would
+ * then be indistinguishable from an exit.
+ *
+ * WHAT THIS COSTS, and it is not nothing. A rejected arming may not arm again
+ * until the descent has come back under 10 m/s (see s_reArmBlock). So an exit
+ * taken while the aircraft is ALREADY descending faster than that — no edge in
+ * between — opens no window at all. Tests/test_comp_corridor.c section 12 pins
+ * both that and the version where a fix dropout hides the edge.
+ *
+ * The trade was made knowingly: without the gate, that same profile times the
+ * exit off the aircraft's stopwatch and draws a lane confidently in the wrong
+ * place, which is the failure a competitor cannot see. Drawing nothing, he can.
+ */
+#define FS_COMP_CONFIRM_MPS      20.0
+
 /* Half the Designated Lane. Beyond this the competitor is OUTSIDE and losing
  * percentage points, which is why it is the boundary the display changes at. */
 #define FS_COMP_LANE_HALF_M      300.0f

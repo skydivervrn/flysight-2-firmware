@@ -57,6 +57,51 @@ static FS_GNSS_Data_t mk(int32_t velD, uint32_t itow, uint8_t fix,
 	return d;
 }
 
+/* --------------------------------------------------------------------------
+   Real vertical speeds, mm/s, 5 Hz, lifted straight off tracks flown on
+   2026-09-05 with v0.0.41 on the device. They are here because the case they
+   describe cannot be invented convincingly: a jump ship letting down from a
+   high lane run looks, to a threshold, exactly like the start of a fall.
+
+   The first two are that aircraft, crossing 10 m/s twice on the way down. The
+   third is the exit from the same jump, four and a half minutes later. Under
+   the v0.0.41 rule the FIRST of these opened the window and put the origin of
+   the Designated Flight Path 1111 m from where the exit was.
+   -------------------------------------------------------------------------- */
+
+/* Peak 14.5 m/s, above 10 for 6.6 s. */
+static const int32_t AIRCRAFT_LETDOWN_1[] = {
+	 10060,  10722,  11311,  11652,  12147,  12662,  13089,  13681,  14135,  14283,
+	 14453,  14496,  14370,  14197,  14107,  13957,  13730,  13531,  13345,  13136,
+	 13189,  13032,  12801,  12367,  12270,  12001,  11525,  11732,  11619,  11147,
+	 10965,  10641,  10418,   9895,   9972,   9767,   9540,   9326,   9133,   9031,
+	  8690,   8553,   8450,   8436,   8260,   8211,   8158,   8091,   8246,   7821,
+	  7552,   7441,   7359,
+};
+
+/* Peak 13.4 m/s, above 10 for 10.6 s — LONGER than the nine-second window, so
+ * no amount of "sustained for N seconds" separates it from an exit. */
+static const int32_t AIRCRAFT_LETDOWN_2[] = {
+	 10181,  10725,  11019,  11240,  12014,  12039,  11965,  12174,  12391,  12689,
+	 12694,  12628,  12507,  12624,  12846,  12669,  12725,  12699,  12628,  12887,
+	 12896,  12728,  12777,  12674,  12795,  12864,  13160,  13016,  13111,  13268,
+	 13378,  13430,  13080,  13081,  13015,  12949,  12616,  12485,  12529,  12993,
+	 12782,  12801,  12699,  12457,  12392,  12117,  11775,  11714,  11432,  11097,
+	 11065,  10517,  10269,   9889,   9566,   9200,   8747,   8265,   8095,   7567,
+	  7327,   7493,
+};
+
+/* Peak 30.8 m/s. It passes 20 m/s 2.6 s in — six and a half seconds before the
+ * origin is latched, which is why confirming costs the origin nothing. */
+static const int32_t REAL_EXIT[] = {
+	 10052,  10839,  12004,  12726,  13480,  14321,  15124,  16101,  16678,  17730,
+	 18482,  18981,  19823,  20616,  21347,  22444,  22840,  23942,  24423,  24686,
+	 25241,  25897,  26359,  27086,  27871,  28379,  28917,  29481,  29746,  29957,
+	 30220,  30217,  30421,  30221,  30528,  30566,  30841,  30647,  30623,  30718,
+	 30698,  30726,  30559,  30586,  30345,  30028,  30137,  30027,  29788,  29587,
+	 29484,  29302,
+};
+
 /* One sample, so a test can say exactly which iTOW and which position the
  * detector saw. Returns 1 on the sample that opens the window. */
 static int step(int32_t velD, uint32_t itow, uint8_t fix,
@@ -459,6 +504,172 @@ int main(void)
 
 		/* One rung per 25 m, twelve pixels apart rather than three. */
 		CHECK(d.shape[2].x0 - d.shape[1].x0 == -12);
+	}
+
+	/* ==== 10. THE AIRCRAFT DOES NOT OPEN THE WINDOW ====
+	 *
+	 * Flown 2026-09-05. Everything below is replayed at the 5 Hz the receiver
+	 * actually delivered, from the sample that first crossed 10 m/s. */
+	{
+		uint32_t t;
+		size_t   k;
+		int      opened;
+
+		/* The letdown that cost the jump: six and a half seconds above 10 m/s,
+		 * peaking at 14.5, and under v0.0.41 that was a Validation Window. */
+		FS_CompCorridor_Init();
+		opened = 0; t = 1000;
+		for (k = 0; k < sizeof(AIRCRAFT_LETDOWN_1)/sizeof(int32_t); k++, t += 200)
+			opened += step(AIRCRAFT_LETDOWN_1[k], t, 3, LAT0, LON0);
+		CHECK(opened == 0);
+		CHECK(FS_CompCorridor_Started() == false);
+
+		/* The second one, which outlasts the window. A rule written as "10 m/s
+		 * held for N seconds" would have opened here for any N below ten. */
+		FS_CompCorridor_Init();
+		opened = 0; t = 1000;
+		for (k = 0; k < sizeof(AIRCRAFT_LETDOWN_2)/sizeof(int32_t); k++, t += 200)
+			opened += step(AIRCRAFT_LETDOWN_2[k], t, 3, LAT0, LON0);
+		CHECK(opened == 0);
+		CHECK(FS_CompCorridor_Started() == false);
+
+		/* The exit opens it exactly once, on the sample nine seconds after the
+		 * crossing — 45 samples at 5 Hz — and not a sample earlier or later. */
+		FS_CompCorridor_Init();
+		opened = 0; t = 1000;
+		for (k = 0; k < sizeof(REAL_EXIT)/sizeof(int32_t); k++, t += 200)
+		{
+			const int fired = step(REAL_EXIT[k], t, 3, LAT0, LON0);
+			if (fired) CHECK(k == 45);
+			opened += fired;
+		}
+		CHECK(opened == 1);
+		CHECK(FS_CompCorridor_Started() == true);
+
+		/* And the whole jump in order, which is the case that matters: two
+		 * rejected armings, a gap of level flight, then the exit. The origin
+		 * has to end up at the exit — a detector that armed once and never
+		 * re-armed would sit rejected for the rest of the flight and draw
+		 * nothing at all, which is the other way to lose the lane. */
+		FS_CompCorridor_Init();
+		opened = 0; t = 1000;
+		for (k = 0; k < sizeof(AIRCRAFT_LETDOWN_1)/sizeof(int32_t); k++, t += 200)
+			opened += step(AIRCRAFT_LETDOWN_1[k], t, 3, LAT0, LON0);
+		for (k = 0; k < 100; k++, t += 200)          /* 20 s of level flight */
+			opened += step(2000, t, 3, LAT0, LON0);
+		for (k = 0; k < sizeof(AIRCRAFT_LETDOWN_2)/sizeof(int32_t); k++, t += 200)
+			opened += step(AIRCRAFT_LETDOWN_2[k], t, 3, LAT0, LON0);
+		for (k = 0; k < 100; k++, t += 200)
+			opened += step(2000, t, 3, LAT0, LON0);
+		CHECK(opened == 0);
+		CHECK(FS_CompCorridor_Started() == false);
+
+		for (k = 0; k < sizeof(REAL_EXIT)/sizeof(int32_t); k++, t += 200)
+			opened += step(REAL_EXIT[k], t, 3, LAT0 + (int32_t)k, LON0);
+		CHECK(opened == 1);
+		CHECK(FS_CompCorridor_Started() == true);
+		CHECK(FS_CompCorridor_Origin(&olat, &olon) == true);
+		CHECK(olat == LAT0 + 45);     /* the exit's 45th sample, not the ship's */
+	}
+
+	/* ==== 11. A REJECTED ARMING MUST NOT TIME THE REAL EXIT ====
+	 *
+	 * The letdown runs straight into the exit with no level flight between —
+	 * the second episode is still doing 12 m/s at the moment it is rejected.
+	 * Re-arming there leaves the AIRCRAFT's stopwatch running, and an exit that
+	 * starts inside its nine seconds gets latched against it: replayed, that
+	 * opened the window 3.2 s early, on sample 91 instead of 107.
+	 *
+	 * So an arming that has been rejected may not start again until the descent
+	 * has come back under 10 m/s. The next one has to be a real crossing. */
+	{
+		uint32_t t = 1000;
+		size_t   k;
+		int      opened = 0, firedAt = -1;
+		const size_t nL2 = sizeof(AIRCRAFT_LETDOWN_2)/sizeof(int32_t);
+
+		FS_CompCorridor_Init();
+		for (k = 0; k < nL2; k++, t += 200)
+			opened += step(AIRCRAFT_LETDOWN_2[k], t, 3, LAT0, LON0);
+		CHECK(opened == 0);
+
+		for (k = 0; k < sizeof(REAL_EXIT)/sizeof(int32_t); k++, t += 200)
+		{
+			if (step(REAL_EXIT[k], t, 3, LAT0 + (int32_t)k, LON0))
+			{
+				firedAt = (int)k;
+				opened++;
+			}
+		}
+		CHECK(opened == 1);
+		/* Nine seconds after the EXIT's own crossing, not the aircraft's. */
+		CHECK(firedAt == 45);
+		CHECK(FS_CompCorridor_Origin(&olat, &olon) == true);
+		CHECK(olat == LAT0 + 45);
+	}
+
+	/* ==== 12. THE PRICE OF THE GATE, PINNED ====
+	 *
+	 * Two sequences where the gate loses the window entirely. Both are here so
+	 * the behaviour is a decision with a test against it rather than something
+	 * discovered in the air, and so that anyone who later finds a better rule
+	 * has the cases already written down.
+	 *
+	 * The trade is deliberate: without the gate a rejected arming times the
+	 * exit and the lane is drawn CONFIDENTLY WRONG (section 11). With it, these
+	 * two profiles draw no lane at all — the wearer sees the clock stay put,
+	 * which is a visible absence rather than a plausible lie. */
+	{
+		uint32_t t;
+		size_t   k;
+		int      opened;
+
+		/* (a) An exit that begins while the aircraft is still going down faster
+		 *     than 10 m/s, so nothing ever crosses the trigger again. The rule's
+		 *     own "first reaches 10 m/s" happened in the aircraft here, and no
+		 *     amount of arithmetic recovers an exit that never had an edge. */
+		FS_CompCorridor_Init();
+		opened = 0; t = 1000;
+		for (k = 0; k < 50; k++, t += 200)          /* 10 s of ship at 12 m/s */
+			opened += step(12000, t, 3, LAT0, LON0);
+		for (k = 0; k < sizeof(REAL_EXIT)/sizeof(int32_t); k++, t += 200)
+		{
+			/* Straight from 12 m/s into the fall, never dipping under 10. */
+			const int32_t v = REAL_EXIT[k] < 12000 ? 12000 : REAL_EXIT[k];
+			opened += step(v, t, 3, LAT0, LON0);
+		}
+		CHECK(opened == 0);
+		CHECK(FS_CompCorridor_Started() == false);
+
+		/* (b) The same, but it is a fix dropout that hides the sample which
+		 *     would have cleared the gate. Only fixed samples clear it, because
+		 *     a gate cleared by a sample nobody received is a gate cleared by
+		 *     nothing. */
+		FS_CompCorridor_Init();
+		opened = 0; t = 1000;
+		for (k = 0; k < 50; k++, t += 200)
+			opened += step(12000, t, 3, LAT0, LON0);
+		for (k = 0; k < 10; k++, t += 200)          /* the below-10 edge, unseen */
+			opened += step(9000, t, 0, LAT0, LON0);
+		for (k = 0; k < sizeof(REAL_EXIT)/sizeof(int32_t); k++, t += 200)
+		{
+			const int32_t v = REAL_EXIT[k] < 12000 ? 12000 : REAL_EXIT[k];
+			opened += step(v, t, 3, LAT0, LON0);
+		}
+		CHECK(opened == 0);
+
+		/* And the same profile WITH the edge visible opens normally, which is
+		 * what says the two cases above are about the edge and nothing else. */
+		FS_CompCorridor_Init();
+		opened = 0; t = 1000;
+		for (k = 0; k < 50; k++, t += 200)
+			opened += step(12000, t, 3, LAT0, LON0);
+		for (k = 0; k < 10; k++, t += 200)
+			opened += step(9000, t, 3, LAT0, LON0);
+		for (k = 0; k < sizeof(REAL_EXIT)/sizeof(int32_t); k++, t += 200)
+			opened += step(REAL_EXIT[k], t, 3, LAT0, LON0);
+		CHECK(opened == 1);
+		CHECK(FS_CompCorridor_Started() == true);
 	}
 
 	printf("%d checks, %d failures\n", g_checks, g_fail);

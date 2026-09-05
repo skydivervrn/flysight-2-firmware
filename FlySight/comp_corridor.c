@@ -43,6 +43,8 @@
 
 static bool     s_armed;        /* 10 m/s has been seen                     */
 static uint32_t s_armTOW;       /* iTOW (ms) of the sample that saw it      */
+static double   s_armPeak;      /* fastest descent since, m/s: the evidence */
+static bool     s_reArmBlock;   /* a rejected arming: wait for a real edge  */
 static bool     s_started;      /* the Validation Window has opened         */
 static int32_t  s_startLat;     /* its origin: the Designated Path starts   */
 static int32_t  s_startLon;     /*   here and runs to the reference point   */
@@ -52,8 +54,10 @@ static int32_t  s_curLon;
 
 void FS_CompCorridor_Init(void)
 {
-	s_armed    = false;
-	s_armTOW   = 0;
+	s_armed      = false;
+	s_armTOW     = 0;
+	s_armPeak    = 0.0;
+	s_reArmBlock = false;
 	s_started  = false;
 	s_startLat = 0;
 	s_startLon = 0;
@@ -98,13 +102,28 @@ bool FS_CompCorridor_Update(const FS_GNSS_Data_t *d)
 
 	if (s_started) return false;
 
+	/* velD is mm/s, POSITIVE DOWN, so this is a descent rate. */
+	const double vDown = (double)d->velD / 1000.0;
+
 	if (!s_armed)
 	{
-		/* velD is mm/s, POSITIVE DOWN, so this is a descent rate. */
-		if ((double)d->velD / 1000.0 >= FS_COMP_TRIGGER_MPS)
+		/* After a rejected arming, the descent has to come back UNDER the
+		 * trigger before it may arm again — the next arming must be a real
+		 * crossing, which is what "reaches" describes.
+		 *
+		 * Without this the aircraft re-arms on the very next sample, still at
+		 * 12 m/s, and that arming's clock keeps running through the level
+		 * flight that follows. An exit beginning inside its nine seconds would
+		 * then be latched against the AIRCRAFT's stopwatch: replayed from the
+		 * 2026-09-05 track, the window opened 3.2 s early, which is a lane
+		 * origin several hundred metres up the run. */
+		if (s_reArmBlock && vDown < FS_COMP_TRIGGER_MPS) s_reArmBlock = false;
+
+		if (vDown >= FS_COMP_TRIGGER_MPS && !s_reArmBlock)
 		{
-			s_armed  = true;
-			s_armTOW = d->iTOW;
+			s_armed   = true;
+			s_armTOW  = d->iTOW;
+			s_armPeak = vDown;
 		}
 
 		/* Never latch on the arming sample itself, whatever the delay is set to:
@@ -113,11 +132,33 @@ bool FS_CompCorridor_Update(const FS_GNSS_Data_t *d)
 		return false;
 	}
 
+	/* The evidence, gathered BEFORE the clock is read: a sample that both
+	 * completes the nine seconds and carries the fastest descent of them has to
+	 * count towards the verdict it is about to be judged by. Only fixed samples
+	 * get here, so a dropout contributes nothing rather than a zero. */
+	if (vDown > s_armPeak) s_armPeak = vDown;
+
 	/* No re-arming on a dip back under 10 m/s. "First reaches" is what the rule
 	 * says, and a wingsuit that levels off for a second inside the first nine is
 	 * still in the same exit — restarting the count there would move the origin
 	 * of the lane hundreds of metres down-track from the judges'. */
 	if (elapsed_ms(d->iTOW, s_armTOW) < FS_COMP_WINDOW_DELAY_MS) return false;
+
+	/* Nine seconds up. Was it a fall, or was it the aircraft letting down?
+	 *
+	 * An arming that never got near freefall is DROPPED and the detector goes
+	 * back to watching. That is not a softening of "first reaches" — it is what
+	 * the phrase means once the descent it referred to turns out to have been
+	 * the ride to altitude. A judge reading the track afterwards would do the
+	 * same, and the alternative is a lane drawn with total confidence about a
+	 * kilometre from the one being scored. See FS_COMP_CONFIRM_MPS. */
+	if (s_armPeak < FS_COMP_CONFIRM_MPS)
+	{
+		s_armed      = false;
+		s_armPeak    = 0.0;
+		s_reArmBlock = true;
+		return false;
+	}
 
 	s_started  = true;
 	s_startLat = d->lat;
