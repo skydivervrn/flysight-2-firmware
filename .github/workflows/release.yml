@@ -75,13 +75,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cat > notes.md <<'EOF'
-          Hotfix. Anyone on v0.0.40 should update.
+          Hotfix on top of v0.0.41, from the first jump that actually flew the competition lane.
 
-          **The top line comes back.** On v0.0.40 the strip across the top of the HUD goes blank at takeoff and nothing replaces it. It was meant to swap: the housekeeping on the ground — battery, satellites, which firmware is live — and in the air the flight clock, or, in wingsuit competition mode, the Designated Lane indicator drawn in the clock's place. Two conditions in the renderer contradicted each other for the clock, which belongs to the status family, so it was skipped on the ground AND in the air. Neither the clock nor the lane indicator could ever draw.
+          **The Designated Lane indicator now spans the whole panel.** Its width used to come from the element's font: at the 24 px status line the ladder was 72 px wide with rungs 3 px apart, so the full 300 m from the centreline to the lane boundary fitted inside the width of five digits. It was legible and it was useless -- a correction a competitor actually flew moved the reading by a pixel. Across the 304 px panel a rung is now 12 px, so 25 m of drift is a centimetre on the glass, and the outermost rung -- the lane edge, where the penalty starts -- lands on the panel instead of somewhere inside it.
 
-          The rule now lives in the pure layout module as one function, with a truth table around it in the host tests. The renderer cannot be linked by a test — which is exactly how v0.0.40 shipped with nothing failing.
+          The flight clock sharing that slot is unchanged, as is everything else on the HUD.
 
-          Verified by the host test suite; **not yet flown.** The lane indicator in particular has still never been seen in the air. It stays display-only: it changes nothing about logging, the GNSS rate or the recorded track.
+          Verified by the host test suite; the lane indicator has been seen in the air once, at the old width, and this wider one has not.
 
           Choose the file matching the `Pubkey_X` batch in `FLYSIGHT.TXT`, rename it to `APP.SFB`, and install it using Groundrush, the web flasher, or the orange-light USB bootloader. The wrong batch is safely ignored. Batches B2-B9 are covered.
           EOF
