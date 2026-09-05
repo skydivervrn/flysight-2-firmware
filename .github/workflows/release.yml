@@ -75,13 +75,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cat > notes.md <<'EOF'
-          Hotfix on top of v0.0.41, from the first jump that actually flew the competition lane.
+          The Validation Window no longer opens in the aircraft.
 
-          **The Designated Lane indicator now spans the whole panel.** Its width used to come from the element's font: at the 24 px status line the ladder was 72 px wide with rungs 3 px apart, so the full 300 m from the centreline to the lane boundary fitted inside the width of five digits. It was legible and it was useless -- a correction a competitor actually flew moved the reading by a pixel. Across the 304 px panel a rung is now 12 px, so 25 m of drift is a centimetre on the glass, and the outermost rung -- the lane edge, where the penalty starts -- lands on the panel instead of somewhere inside it.
+          **What was wrong.** The window arms on the first sample descending at 10 m/s and latches the origin of the Designated Flight Path nine seconds later. 10 m/s is 2000 ft/min, which a jump ship reaches easily: on 2026-09-05 a pilot took the lane run high and let down before the exit, the descent crossed the threshold twice, and the first crossing opened the window in the aeroplane. The origin landed 1111 m and four and a half minutes from the exit, and the lane was drawn about it with complete confidence.
 
-          The flight clock sharing that slot is unchanged, as is everything else on the HUD.
+          Duration does not separate the two -- the second letdown stayed above 10 m/s for 10.6 s, longer than the window itself. Speed does. Across three jumps the aircraft peaked at 14.5 and 13.4 m/s where the exits peaked at 30.8, 33.0 and 32.2. So the peak descent inside the nine seconds now has to reach 20 m/s before the origin latches, and an arming that fails may not start again until the descent has come back under 10 m/s. The confirmation arrives seconds before the latch, so **where the origin falls is unchanged** -- this rejects false windows, it does not move real ones.
 
-          Verified by the host test suite; the lane indicator has been seen in the air once, at the old width, and this wider one has not.
+          **What it costs.** An exit taken while the aircraft is already descending faster than 10 m/s has no threshold crossing of its own to arm on, and draws no lane at all. That trade was made deliberately: the failure it replaces was a lane drawn confidently in the wrong place, which a competitor cannot see, and this one he can.
+
+          The lane indicator has not been flown at the full panel width added in v0.0.42, and this window logic has not been flown at all. Both are covered by host tests replaying the real tracks.
 
           Choose the file matching the `Pubkey_X` batch in `FLYSIGHT.TXT`, rename it to `APP.SFB`, and install it using Groundrush, the web flasher, or the orange-light USB bootloader. The wrong batch is safely ignored. Batches B2-B9 are covered.
           EOF
