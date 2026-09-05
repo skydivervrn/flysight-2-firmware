@@ -54,7 +54,7 @@
  * Then the string on the glasses says exactly which build is running — the
  * whole point of this marker (Firmware_Ver in flysight.txt is unreliable). */
 #ifndef HUD_VERSION
-#define HUD_VERSION "0.0.41"
+#define HUD_VERSION "0.0.42"
 #endif
 
 /* Fonts VERIFIED on ENGO 3 (this unit) via Mac BLE bench 2026-07-20 — fontList
@@ -881,10 +881,17 @@ void FS_ActiveLook_Mode0_Update(void)
             continue;
 
         if (compEl[i]) {
-            /* Height from the element's own font, so the ladder scales with the
-             * numbers beside it exactly as the arrow's box does. Width follows
-             * from the height inside comp_corridor.c: 72 px at the 24 px status
-             * font, which is what the "--:--" clock in this slot occupied.
+            /* Height from the element's own font, so the bar stands as tall as
+             * the clock it replaces. WIDTH is the whole panel, and deliberately
+             * not the element's own footprint: the lane is an instrument to fly
+             * by, not a reading to glance at, and at the status font the entire
+             * 300 m from centreline to lane edge used to fit inside 36 px.
+             *
+             * So the element's x is ignored here and the ladder is centred on
+             * the panel — its y is still the wearer's, which is the part of the
+             * placement that matters for something spanning the full width. The
+             * global shift comes along so the lane sits on the same optical
+             * centre as everything else on the glass.
              *
              * Nothing at all is emitted before the Validation Window opens — not
              * an empty box, not a placeholder. The centre bar APPEARING is the
@@ -893,8 +900,12 @@ void FS_ActiveLook_Mode0_Update(void)
             FS_CompDraw_t lane;
             const int16_t size =
                 (int16_t)FS_HudLayout_FontHeight(s_layout.el[i].font);
+            const int16_t laneW = FS_CompCorridor_Width(FS_HUD_PANEL_W);
+            const int16_t laneX =
+                (int16_t)((FS_HUD_PANEL_W + laneW) / 2 + s_layout.shift_x);
 
-            if (FS_CompCorridor_Build(x, y, size, &comp[i], compOn[i], &lane)) {
+            if (FS_CompCorridor_Build(laneX, y, size, FS_HUD_PANEL_W,
+                                      &comp[i], compOn[i], &lane)) {
                 if (!greySent) { AL_FrameAddColor(15); greySent = true; }
                 for (uint8_t s = 0; s < lane.count; s++)
                     AL_FrameAddShape(lane.shape[s].solid ? AL_CMD_RECTF

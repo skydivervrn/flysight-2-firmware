@@ -247,7 +247,22 @@ static void add_shape(FS_CompDraw_t *d, int32_t xa, int32_t ya,
 	s->solid = solid;
 }
 
+/* The rung pitch for a given span, and the only place it is decided. Whole
+ * pixels, never under 3: two rungs 2 px apart cannot be counted, and counting
+ * them is the whole point. */
+static int32_t pitch_for(int16_t span)
+{
+	int32_t p = (int32_t)span / (2 * FS_COMP_MAX_BARS);
+	return (p < 3) ? 3 : p;
+}
+
+int16_t FS_CompCorridor_Width(int16_t span)
+{
+	return (int16_t)(2 * FS_COMP_MAX_BARS * pitch_for(span));
+}
+
 uint8_t FS_CompCorridor_Build(int16_t ax, int16_t ay, int16_t size,
+                              int16_t span,
                               const FS_CompInd_t *ind, int side_on,
                               FS_CompDraw_t *out)
 {
@@ -258,20 +273,22 @@ uint8_t FS_CompCorridor_Build(int16_t ax, int16_t ay, int16_t size,
 	if (!ind->active)             return 0;
 	if (size < FS_COMP_MIN_SIZE)  return 0;
 
-	/* Proportions of the element's height, so the ladder scales with the font
-	 * the wearer chose for it:
-	 *   pitch  one eighth of the height, never under 3 px — two rungs 2 px apart
-	 *          cannot be counted, and counting them is the whole point;
+	/* Width comes from `span`, height from `size`. They were one number until
+	 * v0.0.42, and tying the lane's width to a font size is what made it
+	 * unreadable in the air: at the 24 px status font the whole instrument was
+	 * 72 px, one rung every 3 px, so the full 300 m from the centreline to the
+	 * lane edge fitted in the width of five digits.
+	 *
+	 *   pitch  the gap between rungs, whole pixels, from the span;
 	 *   chw    half the centre bar's width, so the bar is 2*chw+1 px and always
 	 *          odd, which is what lets it sit ON the centre column rather than
 	 *          half a pixel off it;
 	 *   rungh  half the height, leaving the centre bar standing proud of the
 	 *          ladder by a quarter of the box at each end. That contrast is what
 	 *          makes the centre bar readable at a glance against twelve rungs.
-	 * At the 24 px status font: pitch 3, centre bar 3 px wide and 24 tall, rungs
-	 * 12 px tall, whole ladder 72 px wide — the width the "--:--" clock it
-	 * replaces occupied (5 characters at 15 px). */
-	int32_t pitch = (int32_t)size / 8;  if (pitch < 3) pitch = 3;
+	 * Across the 304 px panel: pitch 12, ladder 288 px, one rung per 25 m of
+	 * drift a full centimetre apart on the glass. */
+	int32_t pitch = pitch_for(span);
 	int32_t chw   = pitch / 2;          if (chw   < 1) chw   = 1;
 	int32_t rungh = (int32_t)size / 2;  if (rungh < 4) rungh = 4;
 

@@ -237,11 +237,22 @@ typedef struct
  *
  *   ax, ay    the element's anchor in PANEL coordinates — the wearer's TOP-LEFT
  *             corner, the same origin every HUD element grows from.
- *   size      the height of the indicator, px; the HUD passes the element's font
- *             height so the ladder scales with the numbers beside it. Width
- *             follows from it (see comp_corridor.c) and is about three times as
- *             much: 72 px for the 24 px status font, which is what the "--:--"
- *             clock it replaces occupied.
+ *   size      the HEIGHT of the indicator, px; the HUD passes the element's font
+ *             height so the bar and the rungs stand as tall as the clock they
+ *             replace.
+ *   span      the WIDTH the ladder may occupy, px.
+ *
+ *             Width used to follow from `size` — about three times it, 72 px at
+ *             the 24 px status font, the footprint of the "--:--" clock. That
+ *             made the instrument as wide as a piece of text: a rung every
+ *             3 px, so 25 m of drift moved the reading by three pixels and a
+ *             competitor flying the lane could not see the correction he was
+ *             making. Flown 2026-09-05; the pilot's words were that the window
+ *             is small, the size of the time.
+ *
+ *             The lane now gets the panel to itself. The clock sharing the slot
+ *             is unchanged — it is text, and text is read, not measured.
+ *             FS_CompCorridor_Width() says where the ladder will actually fall.
  *   ind       from FS_CompCorridor_Indicator.
  *   side_on   0 blanks the RUNGS/solid block for this frame and keeps the centre
  *             bar. That is how the blink is done: the caller flips it on the
@@ -257,8 +268,20 @@ typedef struct
  * on a ladder means changing the number the competitor counts.
  */
 uint8_t FS_CompCorridor_Build(int16_t ax, int16_t ay, int16_t size,
+                              int16_t span,
                               const FS_CompInd_t *ind, int side_on,
                               FS_CompDraw_t *out);
+
+/*
+ * How wide the ladder built with `span` really comes out, px.
+ *
+ * The rung pitch is a whole number of pixels — a ladder counted in fractions of
+ * one is a ladder miscounted — so the drawn width is `span` rounded DOWN to a
+ * multiple of twice the rung count. The caller centres with this, not with
+ * `span`, or the instrument sits a few pixels off the middle of the panel and
+ * every deviation reads biased to one side.
+ */
+int16_t FS_CompCorridor_Width(int16_t span);
 
 /* Below this the rungs are under 6 px tall and 3 px apart, which reads as a
  * smudge rather than a count. Refused outright instead. */

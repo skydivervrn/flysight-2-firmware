@@ -25,6 +25,11 @@
 #include <string.h>
 #include "comp_corridor.h"
 
+/* The panel width, spelled out rather than included: comp_corridor.c is pure
+ * and knows nothing of hud_layout.h, and that is the point of it. If the two
+ * ever disagree the HUD is drawing on a panel this test never checked. */
+#define FS_HUD_PANEL_W_TEST 304
+
 static int g_checks = 0, g_fail = 0;
 #define CHECK(cond) do { \
 	g_checks++; \
@@ -290,20 +295,20 @@ int main(void)
 	 * something was already there. */
 	FS_CompCorridor_Indicator(0, 1, 0.0f, &ind);
 	CHECK(ind.active == 0 && ind.bars == 0 && ind.solid == 0 && ind.blink == 0);
-	CHECK(FS_CompCorridor_Build(296, 232, 24, &ind, 1, &d) == 0);
+	CHECK(FS_CompCorridor_Build(296, 232, 24, 72, &ind, 1, &d) == 0);
 	CHECK(d.count == 0);
 
 	/* Even a deviation that would otherwise fill the screen draws nothing. */
 	FS_CompCorridor_Indicator(0, 1, 900.0f, &ind);
 	CHECK(ind.active == 0);
-	CHECK(FS_CompCorridor_Build(296, 232, 24, &ind, 1, &d) == 0);
+	CHECK(FS_CompCorridor_Build(296, 232, 24, 72, &ind, 1, &d) == 0);
 
 	/* Latched but with no position this tick: the centre bar alone. The window
 	 * is open — that fact does not stop being true because the sky is blocked —
 	 * and freezing the last ladder would be a reading, not a silence. */
 	FS_CompCorridor_Indicator(1, 0, 900.0f, &ind);
 	CHECK(ind.active == 1 && ind.bars == 0 && ind.solid == 0 && ind.blink == 0);
-	CHECK(FS_CompCorridor_Build(296, 232, 24, &ind, 1, &d) == 1);
+	CHECK(FS_CompCorridor_Build(296, 232, 24, 72, &ind, 1, &d) == 1);
 	CHECK(d.shape[0].solid == 1);
 
 	/* ==== 8. THE MIRROR ==== */
@@ -313,7 +318,7 @@ int main(void)
 	 * right of the anchor — at panel x 260, since right is the FALLING x. */
 	FS_CompCorridor_Indicator(1, 1, 100.0f, &ind);      /* 4 rungs, right side */
 	CHECK(ind.bars == 4 && ind.side == 1);
-	CHECK(FS_CompCorridor_Build(296, 232, 24, &ind, 1, &d) == 5);
+	CHECK(FS_CompCorridor_Build(296, 232, 24, 72, &ind, 1, &d) == 5);
 
 	/* shape[0] is always the centre bar: solid, three pixels wide about the
 	 * centre column, and the full height of the element. */
@@ -336,7 +341,7 @@ int main(void)
 
 	/* And the mirror image: LEFT of the path puts the rungs at the LARGER x. */
 	FS_CompCorridor_Indicator(1, 1, -100.0f, &ind);
-	CHECK(FS_CompCorridor_Build(296, 232, 24, &ind, 1, &d) == 5);
+	CHECK(FS_CompCorridor_Build(296, 232, 24, 72, &ind, 1, &d) == 5);
 	for (uint8_t i = 1; i < d.count; i++)
 		CHECK(d.shape[i].x0 > d.shape[0].x1);
 	CHECK(d.shape[1].x0 == 263 && d.shape[4].x0 == 272);
@@ -344,16 +349,16 @@ int main(void)
 	/* A full ladder ends exactly on the edges of the box the layout gave the
 	 * element: the anchor itself on the left, one width in on the right. */
 	FS_CompCorridor_Indicator(1, 1, 300.0f, &ind);
-	CHECK(FS_CompCorridor_Build(296, 232, 24, &ind, 1, &d) == 13);
+	CHECK(FS_CompCorridor_Build(296, 232, 24, 72, &ind, 1, &d) == 13);
 	CHECK(d.shape[12].x0 == 296 - 72);
 	FS_CompCorridor_Indicator(1, 1, -300.0f, &ind);
-	CHECK(FS_CompCorridor_Build(296, 232, 24, &ind, 1, &d) == 13);
+	CHECK(FS_CompCorridor_Build(296, 232, 24, 72, &ind, 1, &d) == 13);
 	CHECK(d.shape[12].x0 == 296);
 
 	/* ==== 9. Outside the lane: one solid block, on the correct side ==== */
 
 	FS_CompCorridor_Indicator(1, 1, 400.0f, &ind);
-	CHECK(FS_CompCorridor_Build(296, 232, 24, &ind, 1, &d) == 2);
+	CHECK(FS_CompCorridor_Build(296, 232, 24, 72, &ind, 1, &d) == 2);
 	CHECK(d.shape[1].solid == 1);
 	/* It covers the footprint the twelve rungs would have, to the wearer's
 	 * right — from just outside the centre bar out to the far edge. */
@@ -363,7 +368,7 @@ int main(void)
 	CHECK(d.shape[1].x1 < d.shape[0].x1);
 
 	FS_CompCorridor_Indicator(1, 1, -400.0f, &ind);
-	CHECK(FS_CompCorridor_Build(296, 232, 24, &ind, 1, &d) == 2);
+	CHECK(FS_CompCorridor_Build(296, 232, 24, 72, &ind, 1, &d) == 2);
 	CHECK(d.shape[1].x0 == 261 && d.shape[1].x1 == 296);
 	CHECK(d.shape[1].x0 > d.shape[0].x0);
 
@@ -373,27 +378,88 @@ int main(void)
 	 * stays. A reference that disappears is not a reference. */
 	FS_CompCorridor_Indicator(1, 1, 500.0f, &ind);
 	CHECK(ind.blink == 1);
-	CHECK(FS_CompCorridor_Build(296, 232, 24, &ind, 0, &d) == 1);
+	CHECK(FS_CompCorridor_Build(296, 232, 24, 72, &ind, 0, &d) == 1);
 	CHECK(d.shape[0].solid == 1 && d.shape[0].x0 == 259);
 
 	/* The same switch blanks a ladder, which is what makes the caller's blink
 	 * one line rather than two cases. */
 	FS_CompCorridor_Indicator(1, 1, 100.0f, &ind);
-	CHECK(FS_CompCorridor_Build(296, 232, 24, &ind, 0, &d) == 1);
+	CHECK(FS_CompCorridor_Build(296, 232, 24, 72, &ind, 0, &d) == 1);
 
 	/* A box too small to count rungs in is refused outright, rather than drawn
 	 * as a smudge a competitor might try to read. */
-	CHECK(FS_CompCorridor_Build(296, 232, FS_COMP_MIN_SIZE - 1, &ind, 1, &d) == 0);
-	CHECK(FS_CompCorridor_Build(296, 232, FS_COMP_MIN_SIZE, &ind, 1, &d) > 0);
-	CHECK(FS_CompCorridor_Build(296, 232, 24, NULL, 1, &d) == 0);
-	CHECK(FS_CompCorridor_Build(296, 232, 24, &ind, 1, NULL) == 0);
+	CHECK(FS_CompCorridor_Build(296, 232, FS_COMP_MIN_SIZE - 1, 72, &ind, 1, &d) == 0);
+	CHECK(FS_CompCorridor_Build(296, 232, FS_COMP_MIN_SIZE, 72, &ind, 1, &d) > 0);
+	CHECK(FS_CompCorridor_Build(296, 232, 24, 72, NULL, 1, &d) == 0);
+	CHECK(FS_CompCorridor_Build(296, 232, 24, 72, &ind, 1, NULL) == 0);
 
 	/* Nothing is clamped to the panel: an element parked at the wearer's right
 	 * edge lets the glasses clip the ladder, because moving a rung inwards would
 	 * change the number the competitor counts. */
 	FS_CompCorridor_Indicator(1, 1, 300.0f, &ind);
-	CHECK(FS_CompCorridor_Build(20, 232, 24, &ind, 1, &d) == 13);
+	CHECK(FS_CompCorridor_Build(20, 232, 24, 72, &ind, 1, &d) == 13);
 	CHECK(d.shape[12].x0 < 0);
+
+	/* ==== 9. THE LANE GETS THE PANEL ====
+	 *
+	 * Flown 2026-09-05: the indicator worked and was useless, because its width
+	 * came from the font. At the 24 px status font the rungs were 3 px apart, so
+	 * the 300 m from centreline to lane edge was 36 px of glass and a correction
+	 * a competitor actually flew moved nothing he could see.
+	 *
+	 * Width is now the caller's to give. Across the panel a rung is 12 px, so
+	 * 25 m of drift is a centimetre on the glass — the thing being measured
+	 * here is not the arithmetic but whether the instrument is legible. */
+	CHECK(FS_CompCorridor_Width(FS_HUD_PANEL_W_TEST) == 288);
+
+	/* Whole pixels only: 304 does not divide by 24, and a ladder counted in
+	 * fractions of a pixel is a ladder miscounted. It rounds DOWN, which is why
+	 * the caller must centre on the width and not on the span it asked for. */
+	CHECK(288 % (2 * FS_COMP_MAX_BARS) == 0);
+	CHECK(FS_CompCorridor_Width(FS_HUD_PANEL_W_TEST) < FS_HUD_PANEL_W_TEST);
+
+	/* The old footprint still comes out where it always did, so a caller that
+	 * wants a small ladder can still have one. */
+	CHECK(FS_CompCorridor_Width(72) == 72);
+
+	/* And the floor holds: a span too narrow for 3 px rungs does not silently
+	 * draw a smudge, it widens to the smallest countable ladder. */
+	CHECK(FS_CompCorridor_Width(24) == 72);
+
+	/* Centred the way the HUD centres it, the full-width ladder lands inside
+	 * the panel with an even margin, and its outermost rungs are the lane
+	 * boundary — the two pixels a competitor is actually steering between. */
+	{
+		const int16_t w  = FS_CompCorridor_Width(FS_HUD_PANEL_W_TEST);
+		const int16_t ax = (int16_t)((FS_HUD_PANEL_W_TEST + w) / 2);
+
+		FS_CompCorridor_Indicator(1, 1, 300.0f, &ind);   /* full ladder, right */
+		CHECK(ind.bars == FS_COMP_MAX_BARS && ind.solid == 0);
+		CHECK(FS_CompCorridor_Build(ax, 232, 24, FS_HUD_PANEL_W_TEST,
+		                            &ind, 1, &d) == 13);
+
+		/* Both ends land ON the panel — the outermost rung is the lane edge,
+		 * and a lane edge clipped by the glass is a boundary the competitor
+		 * cannot see himself crossing. */
+		CHECK(d.shape[12].x0 == ax - w);        /* far rung, wearer's right */
+		CHECK(d.shape[12].x0 >= 0);
+		CHECK(ax <= FS_HUD_PANEL_W_TEST - 1);
+
+		/* Centred to within the odd pixel: 304 minus a 288 ladder leaves 16 to
+		 * share, and the halves cannot both be 8. */
+		{
+			const int left  = ax - w;                        /* 8 */
+			const int right = FS_HUD_PANEL_W_TEST - 1 - ax;  /* 7 */
+			CHECK(left - right <= 1 && right - left <= 1);
+		}
+
+		/* The centre bar sits ON the middle of the panel, which is what the
+		 * whole instrument is read against. */
+		CHECK((d.shape[0].x0 + d.shape[0].x1) / 2 == FS_HUD_PANEL_W_TEST / 2);
+
+		/* One rung per 25 m, twelve pixels apart rather than three. */
+		CHECK(d.shape[2].x0 - d.shape[1].x0 == -12);
+	}
 
 	printf("%d checks, %d failures\n", g_checks, g_fail);
 	return g_fail ? 1 : 0;
