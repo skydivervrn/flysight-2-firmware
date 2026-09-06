@@ -147,6 +147,36 @@ int main(void)
 	CHECK(strlen(FS_NavArrow_Caption(FS_NAV_ARROW_NO_DEST)) <= 6);
 	CHECK(strlen(FS_NavArrow_Caption(FS_NAV_ARROW_NO_FIX)) <= 6);
 
+	/* 11. Decimals under the arrow. Whole kilometres are unflyable: the whole
+	 *     of a drop zone reads "2" and the number only moves once a minute,
+	 *     which is not something a canopy pilot can steer on. Coarse units get
+	 *     one decimal even when the card asks for none. */
+	CHECK(FS_NavArrow_CaptionDecimals("km", 0) == 1);
+	CHECK(FS_NavArrow_CaptionDecimals("mi", 0) == 1);
+
+	/* 11b. A FLOOR, not an override — a card that asked for more keeps it. */
+	CHECK(FS_NavArrow_CaptionDecimals("km", 2) == 2);
+	CHECK(FS_NavArrow_CaptionDecimals("km", 3) == 3);
+
+	/* 11c. Metres and feet are whole numbers and the card does NOT get a say:
+	 *      "1234.5 m" is eight characters, 120 px of a 304 px panel, for half a
+	 *      metre of range to a landing zone. Not a precision anyone flies on. */
+	CHECK(FS_NavArrow_CaptionDecimals("m",  0) == 0);
+	CHECK(FS_NavArrow_CaptionDecimals("ft", 0) == 0);
+	CHECK(FS_NavArrow_CaptionDecimals("m",  1) == 0);
+	CHECK(FS_NavArrow_CaptionDecimals("m",  3) == 0);
+	CHECK(FS_NavArrow_CaptionDecimals("ft", 2) == 0);
+
+	/* 11d. Clamped the way FS_HudLayout_ValueChars clamps it, so a corrupt card
+	 *      cannot make the caption disagree with the width reserved elsewhere,
+	 *      and no suffix at all is treated as a fine unit rather than crashing. */
+	CHECK(FS_NavArrow_CaptionDecimals("km", -1) == 1);
+	CHECK(FS_NavArrow_CaptionDecimals("m",  -1) == 0);
+	CHECK(FS_NavArrow_CaptionDecimals("km",  9) == 3);
+	CHECK(FS_NavArrow_CaptionDecimals(NULL,  0) == 0);
+	CHECK(FS_NavArrow_CaptionDecimals(NULL,  2) == 0);
+	CHECK(FS_NavArrow_CaptionDecimals("",    0) == 0);
+
 	printf("%d checks, %d failures\n", g_checks, g_fail);
 	return g_fail ? 1 : 0;
 }

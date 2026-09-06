@@ -115,6 +115,28 @@ FS_NavArrowState_t FS_NavArrow_State(int dest_set, int fix_ok);
  */
 const char *FS_NavArrow_Caption(FS_NavArrowState_t state);
 
+/*
+ * How many decimals the DISTANCE caption gets, given the element's AL_Dec and
+ * the unit it is drawn in.
+ *
+ * A kilometre is too big a step to fly to. Whole kilometres put every landing
+ * zone on the drop zone at the same "2", so the reading says nothing for the
+ * minute it takes to cross a kilometre and then jumps — and the number under
+ * the arrow exists to be watched while steering to it. Coarse units therefore
+ * get at least one decimal whatever the card asks for; 100 m of movement is
+ * visible, which is the point.
+ *
+ * A FLOOR there, not an override: a card asking for two keeps two.
+ *
+ * Metres and feet go the other way — always ZERO, and the card does not get a
+ * say. Tenths of a metre are not a precision anyone flies on, and the caption
+ * is the one string that carries its unit inside it, so every digit is 15 px
+ * spent across the middle of the panel. See nav_arrow.c.
+ *
+ * `suffix` is FS_HudUnitConv_t.suffix; NULL reads as a fine unit.
+ */
+uint8_t FS_NavArrow_CaptionDecimals(const char *suffix, int8_t decimals);
+
 /* Drawn INSIDE the frame whenever there is no arrow, in the element's own font
  * so it scales with the box. An empty frame reads as "nothing to say yet"; a
  * warning has to look like a warning from the corner of the eye. */

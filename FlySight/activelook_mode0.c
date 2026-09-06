@@ -793,16 +793,21 @@ void FS_ActiveLook_Mode0_Update(void)
                 FS_HudLayout_UnitConv(FS_HUD_QTY_DISTANCE, el->units);
             double dist = LN_DistToDest(gnss) * dconv.multiplier;
 
+            /* Decimals are not taken straight from the card: in kilometres the
+             * caption needs one whether the card asked for it or not. The rule
+             * and the reasoning are in nav_arrow.h, pure and host-tested. */
+            const int dec = (int)FS_NavArrow_CaptionDecimals(dconv.suffix,
+                                                             el->decimals);
+
             /* The unit goes INSIDE the caption here, unlike every other
              * element. FS_HudLayout_UnitDraw places a suffix past the width
              * RESERVED for a value — five digits and a sign for a distance —
              * which would push "m" clear of the box the caption belongs to. */
             if (el->show_units && dconv.suffix[0] != '\0')
                 snprintf(text[i], AL_MODE0_MAX_TEXT, "%.*f %s",
-                         (int)el->decimals, dist, dconv.suffix);
+                         dec, dist, dconv.suffix);
             else
-                snprintf(text[i], AL_MODE0_MAX_TEXT, "%.*f",
-                         (int)el->decimals, dist);
+                snprintf(text[i], AL_MODE0_MAX_TEXT, "%.*f", dec, dist);
 
             int deg = NavArrowDeg(gnss);
             arrowDeg[i] = (int16_t)((deg / NAV_ARROW_STEP_DEG) * NAV_ARROW_STEP_DEG);

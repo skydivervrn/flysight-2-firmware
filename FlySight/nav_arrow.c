@@ -10,6 +10,7 @@
 #include "nav_arrow.h"
 
 #include <math.h>
+#include <string.h>
 
 /* Proportions of the square, chosen so the arrow reads at a glance in the
  * smallest font's box (24 px) as well as the largest (82 px):
@@ -123,6 +124,27 @@ FS_NavArrowState_t FS_NavArrow_State(int dest_set, int fix_ok)
 	if (!dest_set) return FS_NAV_ARROW_NO_DEST;
 	if (!fix_ok)   return FS_NAV_ARROW_NO_FIX;
 	return FS_NAV_ARROW_OK;
+}
+
+uint8_t FS_NavArrow_CaptionDecimals(const char *suffix, int8_t decimals)
+{
+	/* The card's own figure, clamped the way FS_HudLayout_ValueChars clamps it,
+	 * so the caption cannot disagree with the width anything else reserves. */
+	if (decimals < 0) decimals = 0;
+	if (decimals > 3) decimals = 3;
+
+	/* Fine units are whole numbers, and the card does not get a say. This is
+	 * not the arrow being fussy about width for its own sake: the caption is
+	 * the one string on the panel that carries its unit INSIDE it, so
+	 * "1234.5 m" is eight characters at 15 px — 120 px of a 304 px panel, laid
+	 * across whatever the wearer put beside the arrow. Half a metre of range to
+	 * a landing zone is not a number anybody flies on. */
+	if (suffix == NULL ||
+	    (strcmp(suffix, "km") != 0 && strcmp(suffix, "mi") != 0))
+		return 0;
+
+	/* Coarse units: at least one decimal, whatever the card asked for. */
+	return (uint8_t)((decimals < 1) ? 1 : decimals);
 }
 
 const char *FS_NavArrow_Caption(FS_NavArrowState_t state)
