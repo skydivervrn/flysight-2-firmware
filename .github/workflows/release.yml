@@ -75,15 +75,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cat > notes.md <<'EOF'
-          The Validation Window no longer opens in the aircraft.
+          Two readability fixes, both from looking at the glasses.
 
-          **What was wrong.** The window arms on the first sample descending at 10 m/s and latches the origin of the Designated Flight Path nine seconds later. 10 m/s is 2000 ft/min, which a jump ship reaches easily: on 2026-09-05 a pilot took the lane run high and let down before the exit, the descent crossed the threshold twice, and the first crossing opened the window in the aeroplane. The origin landed 1111 m and four and a half minutes from the exit, and the lane was drawn about it with complete confidence.
+          **The lane rungs are three pixels thick.** They were one -- a hairline, legible on a bench and thin against sky. A rung is now a filled 3 px box about its own column with 9 px of gap beside it, so it is still a ladder to be counted rather than a bar to be read. Pitch, rung count and the 25 m each rung is worth are unchanged, and so is the cost of the frame: thirteen packets, drawn with the same opcode the centre bar has used since v0.0.40.
 
-          Duration does not separate the two -- the second letdown stayed above 10 m/s for 10.6 s, longer than the window itself. Speed does. Across three jumps the aircraft peaked at 14.5 and 13.4 m/s where the exits peaked at 30.8, 33.0 and 32.2. So the peak descent inside the nine seconds now has to reach 20 m/s before the origin latches, and an arming that fails may not start again until the descent has come back under 10 m/s. The confirmation arrives seconds before the latch, so **where the origin falls is unchanged** -- this rejects false windows, it does not move real ones.
+          **The distance under the navigation arrow shows tenths of a kilometre.** Whole kilometres put an entire drop zone on one reading: "2" for the minute it takes to cross a kilometre, then a jump of a whole unit, with nothing in between to steer by. Kilometres and miles now always carry at least one decimal whatever `AL_Dec` says on the card, and a card asking for two still gets two. Metres and feet go the other way and are always whole -- this caption is the one string on the panel carrying its unit inside it, so a decimal there spends 15 px of the width beside the arrow to name half a metre of range. Neither needs an edit to an existing layout.
 
-          **What it costs.** An exit taken while the aircraft is already descending faster than 10 m/s has no threshold crossing of its own to arm on, and draws no lane at all. That trade was made deliberately: the failure it replaces was a lane drawn confidently in the wrong place, which a competitor cannot see, and this one he can.
-
-          The lane indicator has not been flown at the full panel width added in v0.0.42, and this window logic has not been flown at all. Both are covered by host tests replaying the real tracks.
+          Both are covered by host tests and neither has been seen on glasses. The full-panel lane indicator added in v0.0.42 has still not been flown, nor has the Validation Window logic from v0.0.43.
 
           Choose the file matching the `Pubkey_X` batch in `FLYSIGHT.TXT`, rename it to `APP.SFB`, and install it using Groundrush, the web flasher, or the orange-light USB bootloader. The wrong batch is safely ignored. Batches B2-B9 are covered.
           EOF
