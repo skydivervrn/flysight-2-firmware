@@ -486,7 +486,7 @@ int main(void)
 		/* Both ends land ON the panel — the outermost rung is the lane edge,
 		 * and a lane edge clipped by the glass is a boundary the competitor
 		 * cannot see himself crossing. */
-		CHECK(d.shape[12].x0 == ax - w);        /* far rung, wearer's right */
+		CHECK((d.shape[12].x0 + d.shape[12].x1) / 2 == ax - w);  /* far rung */
 		CHECK(d.shape[12].x0 >= 0);
 		CHECK(ax <= FS_HUD_PANEL_W_TEST - 1);
 
@@ -504,6 +504,22 @@ int main(void)
 
 		/* One rung per 25 m, twelve pixels apart rather than three. */
 		CHECK(d.shape[2].x0 - d.shape[1].x0 == -12);
+
+		/* And each rung is 3 px thick about its own column, centred on it, with
+		 * 9 px of gap left between neighbours — still a ladder to count, not a
+		 * bar to read. Drawn filled, like the centre bar. */
+		for (int i = 1; i <= FS_COMP_MAX_BARS; i++)
+		{
+			CHECK(d.shape[i].x1 - d.shape[i].x0 == 2);
+			CHECK(d.shape[i].solid == 1);
+		}
+		CHECK(d.shape[1].x0 - d.shape[2].x1 - 1 == 9);        /* blank columns */
+
+		/* The centre bar still stands apart from them: four times as wide and
+		 * twice as tall, which is the whole reason it reads as the reference. */
+		CHECK(d.shape[0].x1 - d.shape[0].x0 == 12);
+		CHECK((d.shape[0].y1 - d.shape[0].y0) ==
+		      2 * (d.shape[1].y1 - d.shape[1].y0));
 	}
 
 	/* ==== 10. THE AIRCRAFT DOES NOT OPEN THE WINDOW ====

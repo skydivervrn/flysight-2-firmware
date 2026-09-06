@@ -326,12 +326,20 @@ uint8_t FS_CompCorridor_Build(int16_t ax, int16_t ay, int16_t size,
 	 *          half a pixel off it;
 	 *   rungh  half the height, leaving the centre bar standing proud of the
 	 *          ladder by a quarter of the box at each end. That contrast is what
-	 *          makes the centre bar readable at a glance against twelve rungs.
+	 *          makes the centre bar readable at a glance against twelve rungs;
+	 *   rhw    half a rung's thickness, so a rung is 2*rhw+1 px and, like the
+	 *          centre bar, always odd and centred ON its column. A single-pixel
+	 *          rung is what the ladder was drawn with through v0.0.43: legible
+	 *          on the bench, thin against sky at altitude. Only taken when the
+	 *          rungs are at least 6 px apart — at the 3 px floor a 3 px rung
+	 *          would close the gaps and turn the ladder into the smudge
+	 *          pitch_for() exists to prevent.
 	 * Across the 304 px panel: pitch 12, ladder 288 px, one rung per 25 m of
-	 * drift a full centimetre apart on the glass. */
+	 * drift a full centimetre apart on the glass, 3 px thick. */
 	int32_t pitch = pitch_for(span);
 	int32_t chw   = pitch / 2;          if (chw   < 1) chw   = 1;
 	int32_t rungh = (int32_t)size / 2;  if (rungh < 4) rungh = 4;
+	int32_t rhw   = (pitch >= 6) ? 1 : 0;
 
 	/* The centre column, measured to the wearer's right of the anchor. Putting
 	 * it a full ladder in means the outermost LEFT rung lands exactly on the
@@ -367,8 +375,14 @@ uint8_t FS_CompCorridor_Build(int16_t ax, int16_t ay, int16_t size,
 	{
 		for (uint8_t k = 1; k <= ind->bars && k <= FS_COMP_MAX_BARS; k++)
 		{
+			/* Thicker than a hairline, so drawn as a filled box about the
+			 * column rather than a line — the same rectf the centre bar has
+			 * been drawn with since v0.0.40, and which flew on 2026-09-05.
+			 * Degenerate spans keep the plain line: a zero-width rectangle is
+			 * not a shape any of this is worth betting a lane on. */
 			const int32_t x = panel_x(ax, uc + s * (int32_t)k * pitch);
-			add_shape(out, x, rung_bot, x, rung_top, 0);
+			add_shape(out, x - rhw, rung_bot, x + rhw, rung_top,
+			          (uint8_t)(rhw ? 1 : 0));
 		}
 	}
 

@@ -322,6 +322,10 @@ uint8_t FS_CompCorridor_Build(int16_t ax, int16_t ay, int16_t size,
  * multiple of twice the rung count. The caller centres with this, not with
  * `span`, or the instrument sits a few pixels off the middle of the panel and
  * every deviation reads biased to one side.
+ *
+ * A rung is drawn 3 px thick about its column (1 px through v0.0.43) wherever
+ * the pitch leaves room for it — the width returned here is measured between
+ * rung CENTRES either way, so it is what the caller centres on regardless.
  */
 int16_t FS_CompCorridor_Width(int16_t span);
 
