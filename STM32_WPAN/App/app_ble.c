@@ -911,7 +911,11 @@ connection_complete_common:
               P2P_SERVER1_BDADDR[3] = le_advertising_event->Advertising_Report[0].Address[3];
               P2P_SERVER1_BDADDR[4] = le_advertising_event->Advertising_Report[0].Address[4];
               P2P_SERVER1_BDADDR[5] = le_advertising_event->Advertising_Report[0].Address[5];
-              P2P_SERVER1_ADDR_TYPE  = le_advertising_event->Advertising_Report[0].Address_Type;
+              /* The report may carry an identity type (0x02 public identity,
+               * 0x03 random identity) when the controller has resolved an RPA.
+               * aci_gap_create_connection accepts only 0x00 or 0x01, so keep
+               * the low bit, which distinguishes public from random. */
+              P2P_SERVER1_ADDR_TYPE  = le_advertising_event->Advertising_Report[0].Address_Type & 0x01;
 
               APP_DBG_MSG("   Address (%s): %02X:%02X:%02X:%02X:%02X:%02X\n\r",
                           P2P_SERVER1_ADDR_TYPE == 0 ? "Public" : "Random",
