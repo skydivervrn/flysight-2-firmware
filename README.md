@@ -91,6 +91,9 @@ You need to find out which one you have. It's one line in a text file:
 | `dac40d25`                 | **B4**       |
 | `3157e028`                 | **B5**       |
 | `8ee78709`                 | **B6**       |
+| `72816871`                 | **B7**       |
+| `b36f45a1`                 | **B8**       |
+| `df8afa69`                 | **B9**       |
 
 So if your line reads `Pubkey_X: 486bee2d3dd6...`, you need the **B2** file.
 
