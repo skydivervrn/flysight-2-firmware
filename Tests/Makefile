@@ -68,10 +68,12 @@ AL_FSM_MOCKS = al_mock/main.h al_mock/app_common.h al_mock/stm32_seq.h \
                al_mock/activelook_client.h al_mock/ble_diag.h al_mock/gnss.h
 
 test_activelook_fsm: test_activelook_fsm.c ../FlySight/activelook.c ../FlySight/activelook.h \
+                     ../FlySight/engo_bind.h \
                      ../FlySight/activelook_mode0.h ../FlySight/activelook_proto.c \
                      ../FlySight/activelook_proto.h $(AL_FSM_MOCKS)
 	rm -rf build_al_fsm && mkdir build_al_fsm
 	cp test_activelook_fsm.c ../FlySight/activelook.c ../FlySight/activelook.h \
+	   ../FlySight/engo_bind.h \
 	   ../FlySight/activelook_mode0.h ../FlySight/activelook_proto.c \
 	   ../FlySight/activelook_proto.h $(AL_FSM_MOCKS) build_al_fsm/
 	$(CC) $(CFLAGS) -o test_activelook_fsm build_al_fsm/test_activelook_fsm.c \

@@ -20,11 +20,11 @@
  * reliable key, so we deliberately do NOT pin by address.
  *
  * Persistence = a dedicated file "/engo3.txt" at the FAT root holding the
- * serial. Behaviour:
- *   - file present + valid  -> connect ONLY to that serial.
- *   - file absent / invalid -> connect to the first ActiveLook device found,
- *                              then create the file with its serial (auto-bind).
- *   - delete the file       -> back to first-boot (connect-to-first) behaviour.
+ * serial. The firmware never writes this file. A human chooses glasses by
+ * creating it through the phone app or manually over USB. With a valid file,
+ * the device connects only to that serial. If the file is missing, invalid,
+ * or unreadable, the device is UNBOUND and does not scan or connect to any
+ * glasses (HUD off). Deleting the file returns the device to that unbound state.
  */
 
 #ifndef ENGO_BIND_H_
@@ -55,14 +55,5 @@ const char *FS_EngoBind_Serial(void);
 /* True if cand (>= 6 chars) trailing-serial equals the bound serial.
  * cand must point to exactly FS_ENGO_SERIAL_LEN characters. */
 bool FS_EngoBind_SerialMatches(const char *cand6);
-
-/* While UNBOUND: remember the serial of the device we are about to connect to,
- * so it can be persisted once the link is confirmed. No-op when already bound. */
-void FS_EngoBind_NotePending(const char *cand6);
-
-/* While UNBOUND with a pending serial: create /engo3.txt and become bound.
- * Call from a normal task context AFTER the link is up (first HUD tick).
- * Idempotent: no-op when already bound or nothing pending. */
-void FS_EngoBind_CommitIfPending(void);
 
 #endif /* ENGO_BIND_H_ */

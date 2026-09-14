@@ -24,6 +24,7 @@
 #include "activelook_client.h"   /* mock  */
 #include "app_common.h"          /* mock  */
 #include "config.h"              /* mock  */
+#include "engo_bind.h"           /* real interface, mocked state */
 
 /* ---------------- check harness ---------------- */
 static int g_checks = 0, g_fail = 0;
@@ -37,6 +38,9 @@ static void (*g_task)(void);      /* the FSM task, captured at RegTask       */
 static int   g_taskPending;       /* set by UTIL_SEQ_SetTask, cleared by pump */
 static int   g_scanRequested;
 static int   g_disconnectRequested;
+static bool  g_bound = true;
+
+bool FS_EngoBind_IsBound(void) { return g_bound; }
 
 void UTIL_SEQ_RegTask(uint32_t taskMask, uint32_t flags, void (*task)(void))
 {
@@ -189,6 +193,14 @@ uint32_t g_mockGnssAgeMs = 0;
 
 int main(void)
 {
+	/* An unbound ACTIVE session never queues the first BLE scan. */
+	g_bound = false;
+	g_scanRequested = 0;
+	FS_ActiveLook_Init();
+	CHECK(g_scanRequested == 0);
+	FS_ActiveLook_DeInit();
+	g_bound = true;
+
 	/* ------------------------------------------------------------------
 	 * 1. The happy path: discovery -> CLEAR -> READY with the timer armed,
 	 *    and every tick draws a frame.

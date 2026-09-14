@@ -134,7 +134,8 @@ from a failed install — the bootloader speaks no Bluetooth.
 - `FlySight/activelook_mode0.c` — HUD render, line definitions, baro altitude.
 - `FlySight/activelook.c` — ActiveLook app FSM (discovery → clear → update).
 - `FlySight/activelook_proto.{c,h}` — pure protocol helpers (host-tested).
-- `FlySight/engo_bind.c` — pin the HUD to one pair of glasses (`/engo3.txt`).
+- `FlySight/engo_bind.c` — read and validate `/engo3.txt` to gate glasses
+  scanning and connection to one serial; the firmware never writes the file.
 - `FlySight/flight_detect.c` — takeoff detection (drives the header marker).
 - `STM32_WPAN/App/app_ble.c`, `activelook_client.c` — BLE central + flow control.
 - `Tools/engo_mac_*.py` — Mac BLE bench: render mock HUD screens on the glasses

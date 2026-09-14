@@ -26,7 +26,7 @@
 #include "activelook_proto.h"     // For AL_BuildFrame, AL_BatteryPct, AL_CMD_*, AL_HOLD/FLUSH
 #include "config.h"               // For FS_Config_Get()
 #include "hud_layout.h"           // For the element list and the global offset
-#include "engo_bind.h"            // For FS_EngoBind_CommitIfPending()
+#include "engo_bind.h"            // For FS_EngoBind_LogLinkedOnce()
 #include "comp_corridor.h"        // For the lane indicator (field 106, HUD_Mode 1)
 #include "flight_detect.h"        // For FS_FlightDetect_InFlight()
 #include "gnss.h"                 // For FS_GNSS_GetData()
@@ -54,7 +54,7 @@
  * Then the string on the glasses says exactly which build is running — the
  * whole point of this marker (Firmware_Ver in flysight.txt is unreliable). */
 #ifndef HUD_VERSION
-#define HUD_VERSION "0.0.44"
+#define HUD_VERSION "0.0.45"
 #endif
 
 /* Fonts VERIFIED on ENGO 3 (this unit) via Mac BLE bench 2026-07-20 — fontList
@@ -629,9 +629,6 @@ FS_ActiveLook_SetupStatus_t FS_ActiveLook_Mode0_Setup(void)
  */
 void FS_ActiveLook_Mode0_Update(void)
 {
-    /* Link is up by the time we render: if we connected to a new (unbound) pair
-     * of glasses, persist their serial to /engo3.txt now (once, task context). */
-    FS_EngoBind_CommitIfPending();
     /* One-shot per-session proof that we actually connected (and to which serial). */
     FS_EngoBind_LogLinkedOnce();
 

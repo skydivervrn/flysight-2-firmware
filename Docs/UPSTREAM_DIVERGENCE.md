@@ -38,6 +38,8 @@ These are not "not yet merged" — they are decisions. When merging upstream, ke
 
 - **Glasses discovery** (`STM32_WPAN/App/app_ble.c`). Name-prefix or service-UUID match plus
   serial binding through `/engo3.txt`, instead of an exact `"ENGO <model> <id>"` string.
+  A valid file must already name the target serial before scanning or connecting;
+  the connect-to-first fallback was removed in 0.0.45.
 - **Flow control** (`STM32_WPAN/App/activelook_client.c`). We discover and subscribe CB8 and
   CB9 and refuse to bring the link up without CB9; upstream has no CB9 at all and cannot
   learn that the glasses asked it to stop sending.

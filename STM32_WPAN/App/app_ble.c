@@ -857,24 +857,17 @@ connection_complete_common:
                 APP_DBG_MSG("-- ActiveLook name prefix matched\n\r");
             }
 
-            /* Decide whether to accept this device.
-             *  - BOUND   (engo3.txt present): must be an ActiveLook device (UUID or
+            /* BOUND (valid engo3.txt): accept only an ActiveLook device (UUID or
              *            name prefix) AND its serial (trailing 6 chars of the
              *            advertised name) must equal the saved one. The serial
              *            NARROWS the ActiveLook filter, it does not replace it —
              *            otherwise any BLE device whose name happens to end in
-             *            those 6 chars would be connected to.
-             *  - UNBOUND (no engo3.txt): first ActiveLook device wins (UUID or
-             *            name prefix), and we remember its serial to persist once
-             *            the link is up (auto-bind on first ever connect). */
+             *            those 6 chars would be connected to. */
             uint8_t accept = 0;
             if (validAdv && BleApplicationContext.EndDevice1Found == 0x00)
             {
-              if (FS_EngoBind_IsBound())
-                accept = ((foundUUID || foundName) &&
-                          haveSerial && FS_EngoBind_SerialMatches(candSerial));
-              else
-                accept = (foundUUID || foundName);
+              accept = (FS_EngoBind_IsBound() && (foundUUID || foundName) &&
+                        haveSerial && FS_EngoBind_SerialMatches(candSerial));
             }
 
             if (accept)
@@ -899,10 +892,6 @@ connection_complete_common:
                   le_advertising_event->Advertising_Report[0].Address[2],
                   le_advertising_event->Advertising_Report[0].Address[1],
                   le_advertising_event->Advertising_Report[0].Address[0]);
-
-              /* Unbound first connect: stash the serial to learn after link-up. */
-              if (!FS_EngoBind_IsBound() && haveSerial)
-                FS_EngoBind_NotePending(candSerial);
 
               /* Store BD Address and Address_Type from the advertising report */
               P2P_SERVER1_BDADDR[0] = le_advertising_event->Advertising_Report[0].Address[0];
@@ -2186,6 +2175,11 @@ static void Scan_Request(void)
   /* Queued scan tasks can outlive ACTIVE mode. The gate is checked here, at
    * execution time, so stale work cannot reconnect to glasses while inactive. */
   if (!FS_ActiveLook_IsRunning())
+  {
+    BleApplicationContext.EndDevice1Found = 0x00;
+    return;
+  }
+  if (!FS_EngoBind_IsBound())
   {
     BleApplicationContext.EndDevice1Found = 0x00;
     return;

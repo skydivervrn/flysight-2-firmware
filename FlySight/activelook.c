@@ -8,6 +8,7 @@
 #include "config.h"
 #include "dbg_trace.h"
 #include "log.h"
+#include "engo_bind.h"
 #include "stm32_seq.h"
 #include <string.h>
 #include <stdio.h>
@@ -483,8 +484,9 @@ void FS_ActiveLook_Init(void)
     s_discoveryInProgress = 0;
     s_discoveryTimedOut = 0;
 
-    /* If we want to automatically scan/connect: */
-    UTIL_SEQ_SetTask(1 << CFG_TASK_START_SCAN_ID, CFG_SCH_PRIO_0);
+    /* Scan only after a valid glasses binding was loaded. */
+    if (FS_EngoBind_IsBound())
+        UTIL_SEQ_SetTask(1 << CFG_TASK_START_SCAN_ID, CFG_SCH_PRIO_0);
 
 	/* Initialize update timer */
 	HW_TS_Create(CFG_TIM_PROC_ID_ISR, &timer_id, hw_ts_Repeated, FS_ActiveLook_Timer);

@@ -29,9 +29,10 @@ Extra features over stock:
 
 - **Auto-reconnect** — glasses can be powered on before or after the FlySight;
   the link self-heals after signal loss.
-- **Glasses binding** — the HUD pins itself to the first pair of glasses it
-  links with (serial stored in `/engo3.txt` on the device; delete the file to
-  re-bind).
+- **Glasses binding** — since firmware 0.0.45, the HUD stays off until you pick
+  your glasses. In the Ground Rush phone app, open HUD & glasses → Glasses and
+  pick from the nearby glasses; the app writes `/engo3.txt` for you. You can
+  also create that file over USB. The HUD then talks only to that serial.
 - **Takeoff detection** — the first header character flips `X` → `V` once a
   climb is detected.
 - **Mac BLE bench** (`Tools/`) — iterate on HUD layouts against real glasses
@@ -177,18 +178,23 @@ If nothing changed, see [If something doesn't work](#if-something-doesnt-work).
 
 ## Using it — the glasses
 
-**Just switch both on.** Turn on the glasses and turn on the FlySight — in any
-order. Within roughly 20–45 seconds the display appears in the glasses.
+**Choose your glasses once, then switch both on.** Turn on the glasses and the
+FlySight in any order. Once you have chosen a pair, the display usually appears
+within roughly 20–45 seconds. There is no BLE pairing or PIN.
 
-There is no pairing, no PIN, no phone app, nothing to set up.
+**Your FlySight remembers your glasses.** A brand-new device does not turn the
+HUD on by itself. Pick your pair in the Ground Rush app's Glasses screen, or
+create `/engo3.txt` over USB with `123456`, `ID: 123456`, or the full
+`ENGO 3 123456` (the last 6 characters are used). After that, it connects only
+to that specific pair, so it cannot grab someone else's glasses on a busy
+dropzone. Firmware built before 0.0.45 behaved differently: it bound
+automatically to the first pair it saw.
 
-**Your FlySight remembers your glasses.** The first time it connects, it
-memorises that specific pair and from then on connects only to them — so on a
-busy dropzone it will not grab someone else's glasses.
-
-**If you ever change glasses** (new pair, borrowed pair, sold yours): plug the
-FlySight into the computer and delete the file **`engo3.txt`** from the drive.
-Next time it will connect to your new glasses and remember those instead.
+**If you ever change glasses** (new pair, borrowed pair, sold yours), pick the
+new pair in the app's Glasses screen. Or plug the FlySight into a computer,
+delete `engo3.txt`, and create a new file with the new serial. Deleting the file
+alone leaves the HUD off until you choose a pair again; the app can write the
+new file for you.
 
 ---
 
@@ -204,10 +210,13 @@ is `APP.SFB` and not `APP.SFB.sfb` — see the warning in step 4.
 **Still nothing after that.** You may have downloaded the file for the wrong
 batch. Try the next one from the table in step 2 (it's harmless).
 
-**The glasses stay blank.** Give it a minute — the connection can take up to
-45 seconds. Make sure the glasses are actually switched on and charged; ENGO
-glasses also switch themselves off after a few minutes of being idle. If you
-recently used another pair, delete `engo3.txt` as described above.
+**The glasses stay blank.** First check that you have chosen a pair: a
+brand-new, never-bound device shows nothing by design. Pick glasses in the
+app's Glasses screen, or check that `/engo3.txt` exists on the card and contains
+their serial. Then give the connection a minute — it can take up to 45 seconds.
+Make sure the glasses are switched on and charged; ENGO glasses also switch
+themselves off after a few idle minutes. If you recently changed pairs, choose
+the new one as described above.
 
 **Something else, or it worked but behaves oddly.** Please tell us — see
 [Feedback](#feedback--issues). If you can, copy the file `EVENT.CSV` from the
@@ -233,18 +242,18 @@ Your jump logs stay where they are.
 ## Technical notes on binding (for the curious)
 
 The glasses are identified by the 6-character serial at the end of their
-Bluetooth name (e.g. `ENGO 3 123456` → `123456`). On the first successful link
-that serial is written to `engo3.txt` in the root of the FlySight drive, and
-afterwards only glasses with that serial are accepted.
+Bluetooth name (e.g. `ENGO 3 123456` → `123456`). The firmware never writes
+`/engo3.txt`. The Ground Rush app writes it when you pick glasses in its
+Glasses screen, or you can create it manually over USB. Accepted contents are
+`123456`, `ID: 123456`, or the full name `ENGO 3 123456` — the last 6 characters
+are used. With no valid file, the firmware does not scan for or connect to any
+glasses; the HUD stays off. It no longer connects to the first ActiveLook pair
+it sees.
 
-You can also pin a specific pair by creating `engo3.txt` yourself. Accepted
-contents: `123456`, `ID: 123456`, or the full name `ENGO 3 123456` — the last
-6 characters are used. Deleting the file returns the device to "connect to the
-first ActiveLook glasses I see, then remember them".
-
-Each session's `EVENT.CSV` logs the bind state at boot
-(`ENGO bind: pinned to serial 123456` / `unbound -> connect to first`) and
-`ENGO bind: linked to glasses serial 123456` once connected.
+Each session's `EVENT.CSV` logs the bind state at boot:
+`ENGO bind: pinned to serial 123456 (engo3.txt)` or
+`ENGO bind: unbound (engo3.txt <state>) -> HUD off, choose glasses in the app`.
+Once connected, it logs `ENGO bind: linked to glasses serial 123456`.
 
 ## Build from source
 
