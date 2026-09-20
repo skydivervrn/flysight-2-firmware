@@ -115,7 +115,11 @@ def main():
         ('Public_Keys/pub_key_b3.bin', 'B3'),
         ('Public_Keys/pub_key_b4.bin', 'B4'),
         ('Public_Keys/pub_key_b5.bin', 'B5'),
-        ('Public_Keys/pub_key_b6.bin', 'B6')
+        ('Public_Keys/pub_key_b6.bin', 'B6'),
+        ('Public_Keys/pub_key_b7.bin', 'B7'),
+        ('Public_Keys/pub_key_b8.bin', 'B8'),
+        ('Public_Keys/pub_key_b9.bin', 'B9'),
+        ('Public_Keys/pub_key_dev.bin', 'DEV')
     ]
 
     for fw_file, fw_name in fw_files:

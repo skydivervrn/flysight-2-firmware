@@ -337,6 +337,16 @@ class TestFlysightTxt(unittest.TestCase):
         self.assertIsNone(fb.batch_for_pubkey_x("abc"))
         self.assertIsNone(fb.batch_for_pubkey_x("deadbeef" + "00" * 28))
 
+    def test_an_early_unit_takes_the_dev_image(self):
+        # The first ~500 units write Pubkey_X as all f's (they do not expose
+        # their key). Once FlySight has switched one to its dev key, the DEV
+        # image is the one that installs; before that, no image does.
+        self.assertEqual(fb.batch_for_pubkey_x("f" * 64), "DEV")
+        self.assertEqual(fb.batch_for_pubkey_x("F" * 64), "DEV")
+        self.assertEqual(fb.batch_for_pubkey_x("338f4f69" + "00" * 28), "DEV")
+        self.assertEqual(fb.batch_from_filename("FlySight2-ENGO-HUD-DEV.sfb"), "DEV")
+        self.assertEqual(fb.batch_from_filename("DEV_UserApp.sfb"), "DEV")
+
     def test_batch_table_matches_the_deploy_keys(self):
         """The table is not folklore: re-derive it from the shipped keys.
 
@@ -346,7 +356,7 @@ class TestFlysightTxt(unittest.TestCase):
         keys = os.path.join(REPO, "Deploy", "Public_Keys")
         derived = {}
         for name in sorted(os.listdir(keys)):
-            if not name.startswith("pub_key_b") or not name.endswith(".bin"):
+            if not name.startswith("pub_key_") or not name.endswith(".bin"):
                 continue
             with open(os.path.join(keys, name), "rb") as f:
                 blob = f.read()

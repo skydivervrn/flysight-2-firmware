@@ -60,7 +60,10 @@ jobs:
           cp build/UserApp.bin Deploy/Firmware_As_Built/UserApp.bin
           mkdir -p out
           cd Deploy
-          for B in B2 B3 B4 B5 B6 B7 B8 B9; do
+          # DEV is not a batch: it is FlySight's published "dev" key, which the
+          # first ~500 units (Pubkey_X all f's) switch to before they can take
+          # any custom firmware. Same image, encrypted for pub_key_dev.bin.
+          for B in B2 B3 B4 B5 B6 B7 B8 B9 DEV; do
             k=$(echo "$B" | tr 'A-Z' 'a-z')
             ../.venv/bin/python -c "import deploy_firmware as d; d.encrypt_firmware_with_key('Firmware_As_Built/UserApp.bin','UserApp','Public_Keys/pub_key_${k}.bin','${B}')"
             cp "Firmware_To_Deploy/${B}_UserApp.sfb" "../out/FlySight2-ENGO-HUD-${B}.sfb"
@@ -83,7 +86,7 @@ jobs:
 
           Both are covered by host tests and neither has been seen on glasses. The full-panel lane indicator added in v0.0.42 has still not been flown, nor has the Validation Window logic from v0.0.43.
 
-          Choose the file matching the `Pubkey_X` batch in `FLYSIGHT.TXT`, rename it to `APP.SFB`, and install it using Groundrush, the web flasher, or the orange-light USB bootloader. The wrong batch is safely ignored. Batches B2-B9 are covered.
+          Choose the file matching the `Pubkey_X` batch in `FLYSIGHT.TXT`, rename it to `APP.SFB`, and install it using Groundrush, the web flasher, or the orange-light USB bootloader. The wrong batch is safely ignored. Batches B2-B9 are covered, plus a `DEV` image for early units (first ~500, `Pubkey_X` all f's) once FlySight has switched them to its dev key.
           EOF
           gh release create "$GITHUB_REF_NAME" \
             --title "$GITHUB_REF_NAME" \

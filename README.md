@@ -38,6 +38,21 @@ Extra features over stock:
 - **Mac BLE bench** (`Tools/`) — iterate on HUD layouts against real glasses
   in ~15 seconds without reflashing the device.
 
+## The phone app: Groundrush
+
+Everything after the first flash is done from the phone with **Groundrush**,
+the free companion app for iOS and Android: pick your glasses, choose what the
+HUD shows and where, set the refresh rate, pull tracks off the logger over
+Bluetooth and review the jump. It also installs later firmware releases over
+the air, so the USB steps below are a one-time thing.
+
+- Website and guides: <https://groundrush.io> — HUD guide:
+  <https://groundrush.io/engo-3-flysight-hud>
+- App Store: <https://apps.apple.com/app/id6801261386>
+- Google Play: <https://play.google.com/store/apps/details?id=io.groundrush.app>
+- Browser flasher (Chrome or Edge on a computer), an alternative to the manual
+  steps below: <https://groundrush.io/flasher>
+
 ---
 
 <a id="requirements"></a><a id="install"></a>
@@ -95,8 +110,18 @@ You need to find out which one you have. It's one line in a text file:
 | `72816871`                 | **B7**       |
 | `b36f45a1`                 | **B8**       |
 | `df8afa69`                 | **B9**       |
+| `338f4f69`                 | **DEV**      |
+| `ffffffff`                 | **DEV** — see below |
 
 So if your line reads `Pubkey_X: 486bee2d3dd6...`, you need the **B2** file.
+
+**Early FlySight 2 (the first ~500 made):** these show `Pubkey_X` as all `f`s
+because they do not expose their key, and they cannot take any custom firmware
+until FlySight has switched them to its "dev" key — a small file you copy onto
+the device once, which FlySight provides. Ask FlySight support for it. After
+that, the **DEV** file is the one for your device, and the official firmware
+for it stays available from flysight.ca. This path has not been run on a real
+early unit by this project yet.
 
 **Can't find the line, or not sure?** Just start with **B2** and continue. If
 the update doesn't happen (step 7 shows nothing changed), simply repeat with

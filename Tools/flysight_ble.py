@@ -133,7 +133,15 @@ BATCHES = {
     "72816871": "B7",
     "b36f45a1": "B8",
     "df8afa69": "B9",
+    # FlySight's published "dev" key (Deploy/Public_Keys/pub_key_dev.bin): the
+    # key the first ~500 units are switched to before they can take custom
+    # firmware. Not a manufacturing batch, but the image is chosen the same way.
+    "338f4f69": "DEV",
 }
+
+# What the first ~500 units write as Pubkey_X: they do not expose their key.
+# After FlySight switches such a unit to the dev key it takes the DEV image.
+EARLY_UNIT_PUBKEY_X = "f" * 64
 
 FLYSIGHT_TXT = "/flysight.txt"
 
@@ -393,10 +401,12 @@ def batch_for_pubkey_x(pubkey_x):
     """
     if not pubkey_x or len(pubkey_x) < 8:
         return None
+    if pubkey_x.lower() == EARLY_UNIT_PUBKEY_X:
+        return "DEV"
     return BATCHES.get(pubkey_x[:8].lower())
 
 
-_BATCH_TOKEN = re.compile(r"(?:^|[^0-9A-Za-z])([Bb][2-9])(?:[^0-9A-Za-z]|$)")
+_BATCH_TOKEN = re.compile(r"(?:^|[^0-9A-Za-z])([Bb][2-9]|[Dd][Ee][Vv])(?:[^0-9A-Za-z]|$)")
 
 
 def batch_from_filename(name: str):

@@ -1,0 +1,98 @@
+name: Add DEV image to a published release
+
+# Encrypts an ALREADY PUBLISHED stable release for FlySight's "dev" key and
+# attaches it to that release as FlySight2-ENGO-HUD-DEV.sfb. Needed once, for
+# releases that predate DEV in release.yml; every release built after that
+# carries the DEV image from the start.
+#
+# The image is rebuilt from the tag with the same pinned toolchain and flags as
+# the original run, then encrypted for Deploy/Public_Keys/pub_key_dev.bin as
+# found AT THE TAG (v0.0.44 carries it). The batch images already on the
+# release are not touched; sha256sums.txt is re-uploaded with one more line.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Published release tag to extend, e.g. v0.0.44'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  add-dev:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+
+      - name: Refuse if the release already has a DEV image
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "${{ inputs.tag }}" --json assets --jq '.assets[].name' > assets.txt
+          cat assets.txt
+          if grep -qx 'FlySight2-ENGO-HUD-DEV.sfb' assets.txt; then
+            echo "release ${{ inputs.tag }} already carries a DEV image; nothing to do"
+            exit 1
+          fi
+          grep -qx 'sha256sums.txt' assets.txt || { echo "release has no sha256sums.txt"; exit 1; }
+
+      - name: Cache Arm GNU toolchain 12.3
+        id: cache-toolchain
+        uses: actions/cache@v4
+        with:
+          path: ~/opt/arm-gnu-toolchain-12.3.rel1-x86_64-arm-none-eabi
+          key: armgnu-12.3.rel1-x86_64
+
+      - name: Install Arm GNU toolchain 12.3
+        if: steps.cache-toolchain.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/opt && cd ~/opt
+          curl -fSL -o armgnu.tar.xz \
+            https://developer.arm.com/-/media/Files/downloads/gnu/12.3.rel1/binrel/arm-gnu-toolchain-12.3.rel1-x86_64-arm-none-eabi.tar.xz
+          tar xf armgnu.tar.xz
+          rm armgnu.tar.xz
+
+      - name: Build firmware at the tag
+        run: |
+          make PREFIX=$HOME/opt/arm-gnu-toolchain-12.3.rel1-x86_64-arm-none-eabi/bin/arm-none-eabi-
+          test -f build/UserApp.bin
+          # the tag must really be in the image, or the DEV file would lie about its version
+          strings build/FlySight.elf | grep -q "${{ inputs.tag }}"
+
+      - name: Encrypt for the DEV key
+        run: |
+          key=Deploy/Public_Keys/pub_key_dev.bin
+          test -f "$key" || { echo "$key is not in ${{ inputs.tag }}"; exit 1; }
+          # 65-byte uncompressed point whose X starts 338f4f69 — the key flysight.ca
+          # serves DEV_*.sfb for; anything else is the wrong file under the right name
+          [ "$(stat -c %s "$key")" = "65" ] || { echo "bad key size"; exit 1; }
+          [ "$(xxd -p -s 1 -l 4 "$key")" = "338f4f69" ] || { echo "not the dev key"; exit 1; }
+          python3 -m venv .venv
+          .venv/bin/pip install --quiet coincurve pycryptodome
+          cp build/UserApp.bin Deploy/Firmware_As_Built/UserApp.bin
+          mkdir -p out
+          cd Deploy
+          ../.venv/bin/python -c "import deploy_firmware as d; d.encrypt_firmware_with_key('Firmware_As_Built/UserApp.bin','UserApp','Public_Keys/pub_key_dev.bin','DEV')"
+          cp Firmware_To_Deploy/DEV_UserApp.sfb ../out/FlySight2-ENGO-HUD-DEV.sfb
+          cd ../out
+          [ "$(head -c4 FlySight2-ENGO-HUD-DEV.sfb)" = "SFU1" ] || { echo "BAD container"; exit 1; }
+
+      - name: Attach it to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir existing
+          gh release download "${{ inputs.tag }}" --pattern sha256sums.txt --dir existing
+          cd out
+          sha256sum FlySight2-ENGO-HUD-DEV.sfb > dev.txt
+          cat ../existing/sha256sums.txt dev.txt | sort -k2 > sha256sums.txt
+          cat sha256sums.txt
+          gh release upload "${{ inputs.tag }}" FlySight2-ENGO-HUD-DEV.sfb sha256sums.txt --clobber
+          gh release view "${{ inputs.tag }}" --json body --jq .body > body.md
+          printf '\n\n**Added later:** `FlySight2-ENGO-HUD-DEV.sfb`, the same firmware encrypted for FlySight'"'"'s dev key, for early units (first ~500, `Pubkey_X` all f'"'"'s) after FlySight has switched them to that key. Rebuilt from this tag by the "Add DEV image" workflow.\n' >> body.md
+          gh release edit "${{ inputs.tag }}" --notes-file body.md
