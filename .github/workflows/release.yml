@@ -47,6 +47,15 @@ jobs:
       - name: Host unit tests
         run: cd Tests && make run
 
+      - name: Drop the nightly tag so git describe names this release
+        # The nightly workflow moves the lightweight `nightly` tag onto every
+        # push. When a stable tag lands on the same commit, `git describe
+        # --tags` in the Makefile picked `nightly` over the annotated release
+        # tag (seen on v0.0.45: Firmware_Ver would have read "nightly" and the
+        # check below failed). Deleting the local copy makes describe
+        # unambiguous; the remote tag is untouched.
+        run: git tag -d nightly || true
+
       - name: Build firmware
         run: |
           make PREFIX=$HOME/opt/arm-gnu-toolchain-12.3.rel1-x86_64-arm-none-eabi/bin/arm-none-eabi-
