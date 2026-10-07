@@ -17,39 +17,53 @@ int main(void)
 	/* 1. The built-in layout is the one approved on hardware: status line on
 	 *    top, HSpd and VSpd sharing a row, then GR and barometric Alt. */
 	FS_HudLayout_Default(&l);
-	CHECK(l.count == 5);
+	CHECK(l.count == 6);
 	CHECK(l.shift_x == 0 && l.shift_y == 0);
 	CHECK(l.el[0].field == FS_HUD_FIELD_INFO);
 	CHECK(l.el[0].x == 296 && l.el[0].y == 232 && l.el[0].font == 0);
-	CHECK(l.el[1].field == FS_HUD_FIELD_HSPEED);
-	CHECK(l.el[1].x == 268 && l.el[1].y == 208 && l.el[1].font == 3);
-	CHECK(l.el[2].field == FS_HUD_FIELD_VSPEED);
-	CHECK(l.el[2].x == 134 && l.el[2].y == 208 && l.el[2].font == 3);
-	CHECK(l.el[3].field == FS_HUD_FIELD_GLIDE);
-	CHECK(l.el[3].x == 250 && l.el[3].y == 147 && l.el[3].decimals == 2);
-	CHECK(l.el[4].field == FS_HUD_FIELD_BARO_ALT);
-	CHECK(l.el[4].x == 250 && l.el[4].y == 73 && l.el[4].decimals == 0);
+	/* The clock (v0.0.46) right after the status line, at the very same spot:
+	 * 100 draws on the ground, 106 in flight, never both. */
+	CHECK(l.el[1].field == FS_HUD_FIELD_FLT_TIME);
+	CHECK(l.el[1].x == 296 && l.el[1].y == 232 && l.el[1].font == 0);
+	CHECK(l.el[1].units == FS_HUD_UNITS_METRIC && l.el[1].decimals == 0);
+	CHECK(l.el[1].show_units == 0);
+	CHECK(l.el[2].field == FS_HUD_FIELD_HSPEED);
+	CHECK(l.el[2].x == 268 && l.el[2].y == 208 && l.el[2].font == 3);
+	CHECK(l.el[3].field == FS_HUD_FIELD_VSPEED);
+	CHECK(l.el[3].x == 134 && l.el[3].y == 208 && l.el[3].font == 3);
+	CHECK(l.el[4].field == FS_HUD_FIELD_GLIDE);
+	CHECK(l.el[4].x == 250 && l.el[4].y == 147 && l.el[4].decimals == 2);
+	CHECK(l.el[5].field == FS_HUD_FIELD_BARO_ALT);
+	CHECK(l.el[5].x == 250 && l.el[5].y == 73 && l.el[5].decimals == 0);
+	/* Exactly one of the two top-strip elements is drawn in each state. */
+	CHECK(FS_HudLayout_FieldVisible(l.el[0].field, 0) == 1);
+	CHECK(FS_HudLayout_FieldVisible(l.el[1].field, 0) == 0);
+	CHECK(FS_HudLayout_FieldVisible(l.el[0].field, 1) == 0);
+	CHECK(FS_HudLayout_FieldVisible(l.el[1].field, 1) == 1);
+	/* The built-in layout already has its clock: the fallback adds nothing. */
+	CHECK(FS_HudLayout_EnsureFlightTime(&l) == 0);
+	CHECK(l.count == 6);
 
-	/* 1b. Unit suffixes are OFF in the built-in layout, all five elements —
+	/* 1b. Unit suffixes are OFF in the built-in layout, every element —
 	 *     the positions above were approved on hardware with bare numbers, so
 	 *     an untouched device must not suddenly grow "km/h" into its neighbour. */
 	for (uint8_t i = 0; i < l.count; i++)
 		CHECK(l.el[i].show_units == 0);
 
 	/* 2. With no offset, an element draws exactly where it says. */
-	CHECK(FS_HudLayout_Place(&l, 1, &x, &y) == 1);
+	CHECK(FS_HudLayout_Place(&l, 2, &x, &y) == 1);
 	CHECK(x == 268 && y == 208);
 
 	/* 3. The offset is in VIEWER terms and X is mirrored on the panel, so
 	 *    "move right" must DECREASE the panel X. Y is not flipped. */
 	l.shift_x = 20;
 	l.shift_y = 10;
-	CHECK(FS_HudLayout_Place(&l, 1, &x, &y) == 1);
+	CHECK(FS_HudLayout_Place(&l, 2, &x, &y) == 1);
 	CHECK(x == 248 && y == 218);
 
 	l.shift_x = -20;
 	l.shift_y = -10;
-	CHECK(FS_HudLayout_Place(&l, 1, &x, &y) == 1);
+	CHECK(FS_HudLayout_Place(&l, 2, &x, &y) == 1);
 	CHECK(x == 288 && y == 198);
 
 	/* 4. A large offset can never produce a coordinate off the panel. */
@@ -225,9 +239,10 @@ int main(void)
 
 	/* 11. Backwards compatibility, the whole point of the release: a card that
 	 *     exists in the field today has no AL_Units above 1, and the built-in
-	 *     layout it falls back to must be untouched. */
+	 *     layout it falls back to must be untouched — save for the clock added
+	 *     in v0.0.46, which is hidden on the ground. */
 	FS_HudLayout_Default(&l);
-	CHECK(l.count == 5);
+	CHECK(l.count == 6);
 	for (uint8_t i = 0; i < l.count; i++)
 	{
 		CHECK(l.el[i].units == FS_HUD_UNITS_METRIC);
@@ -235,6 +250,92 @@ int main(void)
 	}
 	CHECK(l.el[0].field == FS_HUD_FIELD_INFO);   /* field 100, unchanged */
 	CHECK(l.el[0].x == 296 && l.el[0].y == 232 && l.el[0].font == 0);
+
+	/* 11b. FS_HudLayout_EnsureFlightTime (v0.0.46): a card with a status line
+	 *      and no clock gets the clock at the status line's spot, because 100
+	 *      is hidden in flight and the strip would otherwise go blank. */
+	{
+		FS_HudLayout_t c;
+
+		/* Added: 100 present, 106 absent. Copies everything from the FIRST
+		 * 100, not the second, and appends at the end. */
+		memset(&c, 0, sizeof(c));
+		c.el[0] = (FS_HudElement_t){ FS_HUD_FIELD_HSPEED, 268, 208, 3, 0, 0, 0 };
+		c.el[1] = (FS_HudElement_t){ FS_HUD_FIELD_INFO,   280, 220, 6, 1, 2, 1 };
+		c.el[2] = (FS_HudElement_t){ FS_HUD_FIELD_INFO,    10,  10, 0, 0, 0, 0 };
+		c.count = 3;
+		CHECK(FS_HudLayout_EnsureFlightTime(&c) == 1);
+		CHECK(c.count == 4);
+		CHECK(c.el[3].field == FS_HUD_FIELD_FLT_TIME);
+		CHECK(c.el[3].x == 280 && c.el[3].y == 220 && c.el[3].font == 6);
+		CHECK(c.el[3].units == 1 && c.el[3].decimals == 2);
+		CHECK(c.el[3].show_units == 1);
+		/* The elements already there are untouched. */
+		CHECK(c.el[0].field == FS_HUD_FIELD_HSPEED && c.el[0].x == 268);
+		CHECK(c.el[1].field == FS_HUD_FIELD_INFO && c.el[1].x == 280);
+		CHECK(c.el[2].field == FS_HUD_FIELD_INFO && c.el[2].x == 10);
+		/* Idempotent: a second call finds the 106 it just added. */
+		CHECK(FS_HudLayout_EnsureFlightTime(&c) == 0);
+		CHECK(c.count == 4);
+
+		/* The pre-v0.0.46 template shape: data rows first, 100 last. */
+		memset(&c, 0, sizeof(c));
+		c.el[0] = (FS_HudElement_t){ FS_HUD_FIELD_HSPEED,   268, 208, 3, 0, 0, 0 };
+		c.el[1] = (FS_HudElement_t){ FS_HUD_FIELD_VSPEED,   134, 208, 3, 0, 0, 0 };
+		c.el[2] = (FS_HudElement_t){ FS_HUD_FIELD_GLIDE,    250, 147, 4, 0, 2, 0 };
+		c.el[3] = (FS_HudElement_t){ FS_HUD_FIELD_BARO_ALT, 250,  73, 4, 0, 0, 0 };
+		c.el[4] = (FS_HudElement_t){ FS_HUD_FIELD_INFO,     296, 232, 0, 0, 0, 0 };
+		c.count = 5;
+		CHECK(FS_HudLayout_EnsureFlightTime(&c) == 1);
+		CHECK(c.count == 6);
+		CHECK(c.el[5].field == FS_HUD_FIELD_FLT_TIME);
+		CHECK(c.el[5].x == 296 && c.el[5].y == 232 && c.el[5].font == 0);
+
+		/* No-op: the card already places its own 106, wherever that is. */
+		memset(&c, 0, sizeof(c));
+		c.el[0] = (FS_HudElement_t){ FS_HUD_FIELD_INFO,     296, 232, 0, 0, 0, 0 };
+		c.el[1] = (FS_HudElement_t){ FS_HUD_FIELD_FLT_TIME, 150, 100, 2, 0, 0, 0 };
+		c.count = 2;
+		CHECK(FS_HudLayout_EnsureFlightTime(&c) == 0);
+		CHECK(c.count == 2);
+		CHECK(c.el[1].x == 150 && c.el[1].y == 100 && c.el[1].font == 2);
+
+		/* No-op: no 100. Split pieces only are left alone. */
+		memset(&c, 0, sizeof(c));
+		c.el[0] = (FS_HudElement_t){ FS_HUD_FIELD_AL_BATT, 296, 232, 0, 0, 0, 0 };
+		c.el[1] = (FS_HudElement_t){ FS_HUD_FIELD_SATS,    200, 232, 0, 0, 0, 0 };
+		c.el[2] = (FS_HudElement_t){ FS_HUD_FIELD_VERSION, 100, 232, 0, 0, 0, 0 };
+		c.el[3] = (FS_HudElement_t){ FS_HUD_FIELD_HSPEED,  268, 208, 3, 0, 0, 0 };
+		c.count = 4;
+		CHECK(FS_HudLayout_EnsureFlightTime(&c) == 0);
+		CHECK(c.count == 4);
+
+		/* No-op: an empty layout. */
+		memset(&c, 0, sizeof(c));
+		CHECK(FS_HudLayout_EnsureFlightTime(&c) == 0);
+		CHECK(c.count == 0);
+
+		/* No-op: full. Nothing the wearer placed is pushed out. */
+		memset(&c, 0, sizeof(c));
+		c.el[0] = (FS_HudElement_t){ FS_HUD_FIELD_INFO, 296, 232, 0, 0, 0, 0 };
+		for (uint8_t i = 1; i < FS_HUD_MAX_ELEMENTS; i++)
+			c.el[i] = (FS_HudElement_t){ FS_HUD_FIELD_HSPEED, 268, 208, 3, 0, 0, 0 };
+		c.count = FS_HUD_MAX_ELEMENTS;
+		CHECK(FS_HudLayout_EnsureFlightTime(&c) == 0);
+		CHECK(c.count == FS_HUD_MAX_ELEMENTS);
+		for (uint8_t i = 0; i < FS_HUD_MAX_ELEMENTS; i++)
+			CHECK(c.el[i].field != FS_HUD_FIELD_FLT_TIME);
+
+		/* One short of full: the last free slot is used. */
+		c.count = FS_HUD_MAX_ELEMENTS - 1;
+		CHECK(FS_HudLayout_EnsureFlightTime(&c) == 1);
+		CHECK(c.count == FS_HUD_MAX_ELEMENTS);
+		CHECK(c.el[FS_HUD_MAX_ELEMENTS - 1].field == FS_HUD_FIELD_FLT_TIME);
+		CHECK(c.el[FS_HUD_MAX_ELEMENTS - 1].x == 296);
+
+		/* NULL is tolerated. */
+		CHECK(FS_HudLayout_EnsureFlightTime(0) == 0);
+	}
 
 	/* 12. The unit as its own draw (v0.0.19). Font heights are what fontList
 	 *     reported off the hardware; the advances are upper-bound estimates, and

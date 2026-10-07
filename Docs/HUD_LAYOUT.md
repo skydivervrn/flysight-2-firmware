@@ -23,6 +23,7 @@ untouched device looks exactly as it did before.
 | element | field | x   | y   | font | px | content                              |
 |---------|-------|-----|-----|------|----|--------------------------------------|
 | status  | 100   | 296 | 232 | 0    | 24 | `X A:..% F:..% N:.. v<HUD_VER>`      |
+| Flight time | 106 | 296 | 232 | 0  | 24 | `M:SS` since takeoff; lane indicator under HUD_Mode 1 |
 | HSpd    | 0     | 268 | 208 | 3    | 64 | km/h, 0 dec, RAW GPS (no SAS)        |
 | VSpd    | 1     | 134 | 208 | 3    | 64 | km/h, 0 dec, GNSS velD raw, + = down |
 | GR      | 2     | 250 | 147 | 4    | 75 | 2 dec                                |
@@ -30,6 +31,12 @@ untouched device looks exactly as it did before.
 
 No text labels — values only. HSpd and VSpd share one row (HSpd viewer-left,
 VSpd viewer-right).
+
+Status (100) and Flight time (106) share one spot and are never drawn together:
+the status line on the ground, Flight time in flight (since v0.0.46 in the
+built-in layout). A CONFIG.TXT layout that has a 100 but no 106 gets a 106 added
+at the first 100's position, unless the layout is already full (8 elements); a
+layout without a 100 (split pieces 101–105 only) is left as it is.
 
 Speeds are raw GPS on purpose (they match the ground-speed charts used for track
 analysis; the SAS air-density correction was removed from the HUD path —
@@ -103,10 +110,11 @@ BLE in it, so it can be checked on the host (`Tests/test_nav_arrow.c`). The
 app carries a port in `lib/model/nav_arrow.dart`, and its test compares the two
 implementations pixel for pixel — if you change one, change the other.
 
-⚠️ **NOT YET SEEN ON GLASSES.** The geometry is tested, the frames are tested,
-the mirror is tested against three wrong implementations. Nobody has looked
-through the ENGO 3 at it. The fastest way to: `Tools/engo_mac_hud_mock.py` on
-the Mac bench, per the workflow below.
+✅ **Seen on glasses, and flown.** Checked through the ENGO 3 on 2026-08-28
+(HUD 0.0.37) — direction and distance to a stored landing zone both correct —
+and read in the air on 2026-09-06 with `v0.0.44`, which is the release that put
+tenths of a kilometre under the arrow. To iterate without a jump:
+`Tools/engo_mac_hud_mock.py` on the Mac bench, per the workflow below.
 
 ## Where the unit is drawn (since v0.0.19)
 

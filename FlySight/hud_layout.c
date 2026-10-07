@@ -55,12 +55,19 @@ void FS_HudLayout_Default(FS_HudLayout_t *out)
 	out->el[0].decimals   = 0;
 	out->el[0].show_units = 0;
 
+	/* The clock (v0.0.46), at exactly the status line's spot and font. The
+	 * two never draw together — FS_HudLayout_FieldVisible shows 100 only on
+	 * the ground and 106 only in flight — so the strip swaps at takeoff
+	 * instead of going blank. */
+	out->el[1]            = out->el[0];
+	out->el[1].field      = FS_HUD_FIELD_FLT_TIME;
+
 	for (uint8_t i = 0; i < FS_HUD_DEFAULT_SLOTS; ++i)
 	{
-		out->el[1 + i] = s_defaultSlots[i];
+		out->el[2 + i] = s_defaultSlots[i];
 	}
 
-	out->count   = 1 + FS_HUD_DEFAULT_SLOTS;
+	out->count   = 2 + FS_HUD_DEFAULT_SLOTS;
 	out->shift_x = 0;
 	out->shift_y = 0;
 }
@@ -104,6 +111,31 @@ void FS_HudLayout_DefaultSlot(uint8_t slot, uint8_t field, FS_HudElement_t *out)
 		out->decimals   = 0;
 		out->show_units = 0;
 	}
+}
+
+int FS_HudLayout_EnsureFlightTime(FS_HudLayout_t *layout)
+{
+	if (layout == 0) return 0;
+
+	const uint8_t n = (layout->count > FS_HUD_MAX_ELEMENTS)
+	                  ? FS_HUD_MAX_ELEMENTS : layout->count;
+	int info = -1;
+
+	for (uint8_t i = 0; i < n; ++i)
+	{
+		if (layout->el[i].field == FS_HUD_FIELD_FLT_TIME)
+			return 0;                       /* the card places its own clock */
+		if (layout->el[i].field == FS_HUD_FIELD_INFO && info < 0)
+			info = i;
+	}
+
+	if (info < 0) return 0;                 /* no status line to stand in for */
+	if (n >= FS_HUD_MAX_ELEMENTS) return 0; /* no room: leave the card alone  */
+
+	layout->el[n]       = layout->el[info];
+	layout->el[n].field = FS_HUD_FIELD_FLT_TIME;
+	layout->count       = (uint8_t)(n + 1);
+	return 1;
 }
 
 void FS_HudLayout_ClampElement(FS_HudElement_t *el)

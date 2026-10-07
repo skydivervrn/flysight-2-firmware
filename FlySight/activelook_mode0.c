@@ -54,7 +54,7 @@
  * Then the string on the glasses says exactly which build is running — the
  * whole point of this marker (Firmware_Ver in flysight.txt is unreliable). */
 #ifndef HUD_VERSION
-#define HUD_VERSION "0.0.45"
+#define HUD_VERSION "0.0.46"
 #endif
 
 /* Fonts VERIFIED on ENGO 3 (this unit) via Mac BLE bench 2026-07-20 — fontList
@@ -575,8 +575,12 @@ void FS_ActiveLook_Mode0_Init(void)
 
     if (cfg->al_layout_valid)
     {
-        /* The file positions its own elements — use it as it stands. */
+        /* The file positions its own elements — use it as it stands, except
+         * that a card with a status line and no clock gets the clock at the
+         * status line's spot. The rule is FS_HudLayout_EnsureFlightTime's,
+         * host-tested; nothing about it is decided here. */
         s_layout = cfg->al_layout;
+        (void)FS_HudLayout_EnsureFlightTime(&s_layout);
     }
     else
     {

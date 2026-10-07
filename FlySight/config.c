@@ -366,6 +366,14 @@ static const char defaultConfig[] =
 		"AL_Line:     100 ; Status line\n"
 		"AL_X:        296\n"
 		"AL_Y:        232\n"
+		"AL_Font:       0\n"
+		"\n"
+		"AL_Line:     106 ; Flight time\n"
+		"                 ;   Same spot as the status line: only one\n"
+		"                 ;   is drawn at a time, the status line on\n"
+		"                 ;   the ground and Flight time in flight.\n"
+		"AL_X:        296\n"
+		"AL_Y:        232\n"
 		"AL_Font:       0\n";
 
 void FS_Config_Init(void)

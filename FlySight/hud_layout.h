@@ -42,8 +42,9 @@
 #define FS_HUD_PANEL_W  304
 #define FS_HUD_PANEL_H  256
 
-/* Room for the four data slots plus the info line, with spare capacity so a
- * future field does not force a config-format change. */
+/* Room for the four data slots, the info line and the clock that shares its
+ * spot, with spare capacity so a future field does not force a config-format
+ * change. */
 #define FS_HUD_MAX_ELEMENTS  8
 
 /* Number of built-in data slots (the default layout, minus the info line). */
@@ -95,7 +96,13 @@
  * line map, and because AL_Units and AL_Dec mean nothing to it — but it is NOT
  * part of the status LINE: field 100 renders exactly the five pieces it always
  * has. Every card in the field carries a 100, and slipping a clock into it
- * would move the version marker that tells us which firmware is live. */
+ * would move the version marker that tells us which firmware is live. On the
+ * ground nothing changes.
+ *
+ * Since v0.0.46 a card that carries a 100 and no 106 gets a 106 derived at
+ * 100's position (FS_HudLayout_EnsureFlightTime), and the built-in layout has
+ * one too. Since v0.0.40 field 100 is hidden in flight, so such a card's top
+ * strip was already blank all the way down — and a blank strip helps nobody. */
 #define FS_HUD_FIELD_FLT_TIME   106 /* time since takeoff, "M:SS" / "--:--"    */
 #define FS_HUD_FIELD_STATUS_MAX 106 /* last of the status family               */
 
@@ -182,13 +189,33 @@ typedef struct
 } FS_HudLayout_t;
 
 /* The layout tuned on hardware and approved pixel by pixel (see
- * Docs/HUD_LAYOUT.md): info line on top, HSpd and VSpd sharing a row, then GR
- * and Alt. Used whenever CONFIG.TXT carries no positioned layout, so the
- * glasses work out of the box with an untouched config. */
+ * Docs/HUD_LAYOUT.md): info line on top — and the clock (106) at the very same
+ * spot, element 1, drawn only in flight while 100 is drawn only on the ground —
+ * HSpd and VSpd sharing a row, then GR and Alt. Used whenever CONFIG.TXT
+ * carries no positioned layout, so the glasses work out of the box with an
+ * untouched config. */
 void FS_HudLayout_Default(FS_HudLayout_t *out);
 
+/* Fallback for cards written before the clock existed — and for the built-in
+ * template up to v0.0.45, which had no 106 either.
+ *
+ * If `layout` has at least one element with field 100 (the status line) and
+ * none with field 106 (the clock), append a 106 that copies x, y, font, units,
+ * decimals and show_units from the FIRST 100 element, so the strip the status
+ * line vacates at takeoff shows the stopwatch (or, under HUD_Mode 1, the lane
+ * indicator) instead of nothing. Returns 1 if it appended, 0 otherwise.
+ *
+ * It does nothing when:
+ *   - the card already has a 106 anywhere — the wearer placed it;
+ *   - there is no 100 — a card built from the split pieces 101..105 only is
+ *     left alone, because those pieces may be scattered and there is no one
+ *     "status position" to inherit;
+ *   - the layout is full (count == FS_HUD_MAX_ELEMENTS) — nothing the wearer
+ *     placed is ever pushed out to make room. */
+int FS_HudLayout_EnsureFlightTime(FS_HudLayout_t *layout);
+
 /* Position, font and precision of built-in data slot `slot` (0..3), i.e. the
- * default layout without its info line. Used as the starting point for a
+ * default layout without its info line and clock. Used as the starting point for a
  * config-supplied element so a config that names fields but omits coordinates
  * still lands somewhere sensible. Slots at or beyond FS_HUD_DEFAULT_SLOTS get
  * the info line's own defaults for FS_HUD_FIELD_INFO and (0,0) otherwise. */
