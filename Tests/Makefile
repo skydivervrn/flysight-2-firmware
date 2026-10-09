@@ -10,7 +10,7 @@ PYTHON = python3
 
 TESTS = test_time test_activelook test_flight_detect test_engo_bind test_hud_layout \
         test_ble_diag test_activelook_adv test_activelook_fsm test_crs test_nav_arrow \
-        test_comp_corridor
+        test_comp_corridor test_activelook_mode0
 
 all: $(TESTS)
 
@@ -79,6 +79,23 @@ test_activelook_fsm: test_activelook_fsm.c ../FlySight/activelook.c ../FlySight/
 	$(CC) $(CFLAGS) -o test_activelook_fsm build_al_fsm/test_activelook_fsm.c \
 	   build_al_fsm/activelook.c build_al_fsm/activelook_proto.c
 
+# The HUD renderer itself. Same copy-next-to-mocks trick: activelook_mode0.c
+# says #include "app_common.h"/"activelook_client.h"/"log.h", which would find
+# the real CubeMX chain and the real BLE client if compiled in place. Only those
+# three are mocked (mode0_mock/); every other header is the real one from
+# ../FlySight, and the pure modules the renderer draws with are linked for real.
+MODE0_MOCKS = mode0_mock/app_common.h mode0_mock/activelook_client.h mode0_mock/log.h
+MODE0_PURE  = ../FlySight/hud_layout.c ../FlySight/activelook_proto.c \
+              ../FlySight/comp_corridor.c ../FlySight/nav.c ../FlySight/nav_arrow.c
+
+test_activelook_mode0: test_activelook_mode0.c ../FlySight/activelook_mode0.c \
+                       ../FlySight/activelook_mode0.h $(MODE0_PURE) $(MODE0_MOCKS)
+	rm -rf build_al_mode0 && mkdir build_al_mode0
+	cp test_activelook_mode0.c ../FlySight/activelook_mode0.c $(MODE0_MOCKS) build_al_mode0/
+	$(CC) $(CFLAGS) -I../FlySight -o test_activelook_mode0 \
+	   build_al_mode0/test_activelook_mode0.c build_al_mode0/activelook_mode0.c \
+	   $(MODE0_PURE) -lm
+
 # Compile the real CRS state machine beside host-only definitions of its
 # FatFs, BLE queue, scheduler, timer and resource-manager dependencies.
 test_crs: test_crs.c crs_mock/crs_mock.h ../FlySight/crs.c ../FlySight/crs.h
@@ -97,12 +114,13 @@ run: all
 	@echo "=== test_comp_corridor ==="; ./test_comp_corridor
 	@echo "=== test_activelook_adv ==="; ./test_activelook_adv
 	@echo "=== test_activelook_fsm ==="; ./test_activelook_fsm
+	@echo "=== test_activelook_mode0 ==="; ./test_activelook_mode0
 	@echo "=== test_crs ===";           ./test_crs
 	@echo "=== test_flysight_ble ==="; $(PYTHON) test_flysight_ble.py
 	@echo "=== test_flysight_app ==="; $(PYTHON) test_flysight_app.py
 
 clean:
 	rm -f $(TESTS)
-	rm -rf build_engo_bind build_al_fsm build_crs $(addsuffix .dSYM,$(TESTS)) __pycache__
+	rm -rf build_engo_bind build_al_fsm build_al_mode0 build_crs $(addsuffix .dSYM,$(TESTS)) __pycache__
 
 .PHONY: all run clean

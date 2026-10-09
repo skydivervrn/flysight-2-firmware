@@ -26,6 +26,13 @@ static uint8_t g_tx_len[16];
 static int g_tx_count;
 
 static FRESULT g_write_result;
+/* The written file: content by position, so a packet that lands twice shows
+ * up as doubled bytes rather than passing silently. f_write writes at the
+ * current position and advances it, as FatFs does; f_lseek moves it back. */
+static uint8_t g_file[1024];
+static FSIZE_t g_file_size;
+static int g_tx_full;
+static FIL *g_write_fp; /* crs.c's static FIL, as last seen by f_write */
 static int g_short_write;
 static FRESULT g_close_result;
 static FRESULT g_seek_result;
@@ -58,7 +65,7 @@ static int g_failures;
 
 uint8_t *BLE_TX_Queue_GetNextTxPacket(void)
 {
-	return g_tx_count < 16 ? g_tx_staging : NULL;
+	return (!g_tx_full && g_tx_count < 16) ? g_tx_staging : NULL;
 }
 
 void BLE_TX_Queue_SendNextTxPacket(Custom_STM_Char_Opcode_t opcode,
@@ -90,6 +97,7 @@ FRESULT f_open(FIL *fp, const TCHAR *path, uint8_t mode)
 	g_path_was_terminated = g_path_length < 245;
 	fp->open = 1;
 	fp->pos = 0;
+	g_file_size = 0;
 	return FR_OK;
 }
 
@@ -113,8 +121,13 @@ FRESULT f_read(FIL *fp, void *buffer, UINT count, UINT *br)
 
 FRESULT f_write(FIL *fp, const void *buffer, UINT count, UINT *bw)
 {
-	(void) fp; (void) buffer;
-	*bw = g_short_write && count ? count - 1 : count;
+	UINT n = g_short_write && count ? count - 1 : count;
+	g_write_fp = fp;
+	if (fp->pos + n > sizeof(g_file)) n = (UINT) (sizeof(g_file) - fp->pos);
+	memcpy(&g_file[fp->pos], buffer, n);
+	fp->pos += n;
+	if (fp->pos > g_file_size) g_file_size = fp->pos;
+	*bw = n;
 	return g_write_result;
 }
 
@@ -154,6 +167,10 @@ static void reset_observations(void)
 	g_tx_count = 0;
 	g_write_result = FR_OK;
 	g_short_write = 0;
+	g_tx_full = 0;
+	g_write_fp = NULL;
+	memset(g_file, 0, sizeof(g_file));
+	g_file_size = 0;
 	g_close_result = FR_OK;
 	g_seek_result = FR_OK;
 	g_open_count = 0;
@@ -255,6 +272,74 @@ static void test_crs_write_partial(void)
 	cancel_write();
 }
 
+static int file_is(const char *expected)
+{
+	size_t n = strlen(expected);
+	return g_file_size == n && memcmp(g_file, expected, n) == 0;
+}
+
+static void test_crs_write_ack_lost_retransmit_written_once(void)
+{
+	/* The bytes are committed before the ACK is queued. With the TX pool full
+	 * the ACK is lost, next_packet stays put and the phone sends packet 0
+	 * again: the file must end up with "abc" once, not "abcabc". */
+	uint8_t p0[] = { CRS_FILE_DATA, 0, 'a', 'b', 'c' };
+	uint8_t p1[] = { CRS_FILE_DATA, 1, 'd', 'e' };
+	reset_observations();
+	begin_write();
+	g_tx_full = 1;
+	send_packet(p0, sizeof(p0));
+	CHECK(g_tx_count == 0);
+	CHECK(g_write_fp != NULL && g_write_fp->pos == 0);
+	CHECK(g_close_count == 0);
+	g_tx_full = 0;
+	send_packet(p0, sizeof(p0));
+	CHECK(sent(CRS_FILE_ACK, 0));
+	send_packet(p1, sizeof(p1));
+	CHECK(sent(CRS_FILE_ACK, 1));
+	CHECK(file_is("abcde"));
+	cancel_write();
+}
+
+static void test_crs_write_short_write_rolls_back(void)
+{
+	/* A short write NAKs, and the bytes it did write must not stay ahead of
+	 * the retransmit: the position goes back to where the packet started. */
+	uint8_t packet[] = { CRS_FILE_DATA, 0, 'a', 'b', 'c' };
+	reset_observations();
+	begin_write();
+	g_short_write = 1;
+	send_packet(packet, sizeof(packet));
+	CHECK(sent(CRS_NAK, CRS_FILE_DATA));
+	CHECK(g_write_fp != NULL && g_write_fp->pos == 0);
+	g_tx_count = 0;
+	g_short_write = 0;
+	send_packet(packet, sizeof(packet));
+	CHECK(sent(CRS_FILE_ACK, 0));
+	CHECK(file_is("abc"));
+	cancel_write();
+}
+
+static void test_crs_write_rollback_seek_fails_aborts(void)
+{
+	/* Bytes that cannot be taken back must never be followed by an ACK: the
+	 * transfer ends with a NAK and the file is closed. */
+	uint8_t packet[] = { CRS_FILE_DATA, 0, 'a', 'b', 'c' };
+	reset_observations();
+	begin_write();
+	g_short_write = 1;
+	g_seek_result = FR_DISK_ERR;
+	send_packet(packet, sizeof(packet));
+	CHECK(sent(CRS_NAK, CRS_FILE_DATA));
+	CHECK(g_close_count == 1);
+	CHECK(g_release_count == 1);
+	g_tx_count = 0;
+	g_short_write = 0;
+	g_seek_result = FR_OK;
+	send_packet(packet, sizeof(packet));
+	CHECK(!sent(CRS_FILE_ACK, 0));
+}
+
 static void test_crs_write_disk_full(void)
 {
 	uint8_t packet[] = { CRS_FILE_DATA, 0, 'x' };
@@ -298,6 +383,9 @@ int main(void)
 	RUN_TEST(test_crs_write_short_path_is_accepted);
 	RUN_TEST(test_crs_write_max_length);
 	RUN_TEST(test_crs_write_partial);
+	RUN_TEST(test_crs_write_ack_lost_retransmit_written_once);
+	RUN_TEST(test_crs_write_short_write_rolls_back);
+	RUN_TEST(test_crs_write_rollback_seek_fails_aborts);
 	RUN_TEST(test_crs_write_disk_full);
 	RUN_TEST(test_crs_write_eof_close_fails);
 	RUN_TEST(test_crs_read_seek_fail);

@@ -54,7 +54,7 @@
  * Then the string on the glasses says exactly which build is running — the
  * whole point of this marker (Firmware_Ver in flysight.txt is unreliable). */
 #ifndef HUD_VERSION
-#define HUD_VERSION "0.0.46"
+#define HUD_VERSION "0.0.47"
 #endif
 
 /* Fonts VERIFIED on ENGO 3 (this unit) via Mac BLE bench 2026-07-20 — fontList
@@ -206,26 +206,128 @@ static double LN_Heading(const FS_GNSS_Data_t *d) {
 
 /* Barometric altitude relative to the pressure captured at ACTIVE-mode start (so
  * it reads 0 where/when the device was switched ON, then height above that point
- * in metres). Independent of GPS. The reference is cleared on EVERY activation via
- * FS_ActiveLook_Mode0_ResetBaroRef() (called from FS_ActiveLook_Init, i.e. once
- * per ACTIVE entry) and re-captured on the first valid sample. It is NOT reset on
- * glasses reconnect (Mode0_Init runs per reconnect — a mid-flight reconnect must
- * not re-zero the altitude). NB "off" by button = SLEEP, RAM retained: a static
- * alone would keep last session's zero point forever. */
-static int32_t s_baroRefPa100 = 0;   // reference pressure, units Pa*100 (as baro reports)
+ * in metres). Independent of GPS.
+ *
+ * WHERE THE ZERO POINT COMES FROM (changed 2026-10-09, review finding F1-b).
+ * Until v0.0.46 the reference was captured HERE, in the render path — i.e. on
+ * the first HUD frame, which only exists once the glasses are connected. A
+ * FlySight switched on at the ground whose glasses only linked up in the
+ * aircraft therefore took the AIRCRAFT's pressure as zero, and the whole jump
+ * read relative to it: hundreds of metres too low, on the one number a
+ * skydiver uses to decide when to pull. Now the reference is taken by
+ * FS_ActiveLook_Mode0_BaroSample(), which FS_Baro_DataReady_Callback calls for
+ * every sample in ACTIVE with or without glasses — so the zero point is the
+ * first sample after switch-on, wherever the glasses are. The capture below is
+ * kept only as belt and braces, for a build where the hook were not wired.
+ *
+ * The reference is cleared on EVERY ACTIVE entry via
+ * FS_ActiveLook_Mode0_ResetBaroRef(), called from FS_ActiveControl_Init (always
+ * runs) and again from FS_ActiveLook_Init (only with AL_Mode on) — both before
+ * FS_Baro_Start, so no sample can slip in between. It is NOT reset on glasses
+ * reconnect (Mode0_Init runs per reconnect — a mid-flight reconnect must not
+ * re-zero the altitude). NB "off" by button = SLEEP, RAM retained: a static
+ * alone would keep last session's zero point forever.
+ *
+ * WHETHER THE NUMBER IS STILL TRUE (2026-10-09, review finding F1-a). Nothing
+ * here used to look at whether the barometer was still delivering. If it stops
+ * — a wedged I2C read, a sensor that failed to start — FS_Baro_GetData() keeps
+ * returning the last pressure and the HUD went on showing that altitude as if
+ * live, frozen at whatever height the failure happened. The GNSS fields have
+ * had dashes for exactly this case since FS_GNSS_IsStale(); the altitude now
+ * gets the same treatment: no fresh sample for BARO_STALE_MS → "----".
+ *
+ * Freshness is a SAMPLE COUNT bumped by the hook, not FS_Baro_Data_t.time:
+ * baro.c stamps `time` when a read is STARTED (FS_Baro_Read), before the I2C
+ * transfer completes, and keeps stamping it when the transfer then fails. A
+ * sensor that NAKs every read would look perfectly alive by its timestamp. The
+ * hook only runs on a completed, successful read. The age is measured with
+ * HAL_GetTick(), the same clock FS_GNSS_MsSinceUpdate() uses. */
+static volatile int32_t  s_baroRefPa100 = 0;  // reference pressure, units Pa*100 (as baro reports)
+static volatile uint32_t s_baroSamples  = 0;  // good samples since ACTIVE entry (hook)
+static uint32_t s_baroSeenSamples;            // count as of the last watch pass
+static uint32_t s_baroSeenTick;               // HAL_GetTick() when it last moved
+static bool     s_baroSilent;                 // "Baro silent" logged, partner owed
+
+/* Same threshold as GNSS_STALE_MS (gnss.c). The barometer is sampled far faster
+ * than that, so two seconds without one is a fault, not jitter — and two seconds
+ * is about as long as a frozen altitude can be allowed to look live. */
+#define BARO_STALE_MS  2000u
 
 void FS_ActiveLook_Mode0_ResetBaroRef(void)
 {
-    s_baroRefPa100 = 0;
+    s_baroRefPa100    = 0;
+    s_baroSamples     = 0;
+    s_baroSeenSamples = 0;
+    /* Starts the clock at switch-on, so a barometer that never delivers at all
+     * goes to dashes (and gets its log line) two seconds into the session
+     * instead of reading 0 m forever. */
+    s_baroSeenTick    = HAL_GetTick();
+    s_baroSilent      = false;
 }
+
+/* Runs in the sensor-read completion callback, for every good sample in ACTIVE.
+ * Kept to a compare and two stores on purpose: it is not task context, and
+ * everything that takes time (the clock, the log line) is done by the reader
+ * on the HUD tick. Both words are 32-bit, so the task side reads them whole.
+ * Takes the pressure rather than FS_Baro_Data_t so this header stays free of
+ * baro.h and the HAL types it needs (activelook.c and its host test include it). */
+void FS_ActiveLook_Mode0_BaroSample(int32_t pressurePa100)
+{
+    if (pressurePa100 <= 0) return;              // not a usable sample
+    if (s_baroRefPa100 == 0)
+        s_baroRefPa100 = pressurePa100;          // zero point = first sample after switch-on
+    s_baroSamples++;
+}
+
+/* Called once per HUD tick, from task context. Advances the freshness clock
+ * when the hook has counted a new sample, and writes ONE line on each edge so a
+ * flight log says when the barometer went quiet and when it came back.
+ * Returns true when the altitude may be drawn as a number: at least one good
+ * sample since switch-on, and the newest one younger than BARO_STALE_MS.
+ *
+ * The display and the log deliberately use different rules for the time
+ * before the first sample (2026-10-09, F1-f). The display is strict: no sample
+ * yet means nothing to draw, so dashes from the very first frame. The log is
+ * time-based in every case: "Baro silent" only once BARO_STALE_MS has really
+ * passed with nothing — since switch-on (ResetBaroRef starts that clock) or
+ * since the last sample. Logging on "no sample yet" alone wrote a "silent"
+ * line a few ms into every session whose glasses rendered before the first
+ * read completed — a fault in EVENT.CSV that never happened. The partner line
+ * is written only after a "silent" one, so the two always come in pairs. */
+static bool BaroWatch(void)
+{
+    const uint32_t n   = s_baroSamples;
+    const uint32_t now = HAL_GetTick();
+
+    if (n != s_baroSeenSamples) {
+        s_baroSeenSamples = n;
+        s_baroSeenTick    = now;
+    }
+
+    const uint32_t age   = now - s_baroSeenTick;
+    const bool     quiet = (age >= BARO_STALE_MS);     /* log rule     */
+    const bool     fresh = (n != 0u) && !quiet;        /* display rule */
+
+    if (quiet && !s_baroSilent) {
+        s_baroSilent = true;
+        FS_Log_WriteEventAsync("Baro silent: no sample for %lu ms",
+                               (unsigned long)age);
+    } else if (!quiet && s_baroSilent) {
+        s_baroSilent = false;
+        FS_Log_WriteEventAsync("Baro talking again");
+    }
+    return fresh;
+}
+
+
 static double LN_BaroAltitude(const FS_GNSS_Data_t *d) {
     (void)d;
     const FS_Baro_Data_t *b = FS_Baro_GetData();
     if (b == NULL || b->pressure <= 0) {
-        return 0.0;                    // no valid sample yet
+        return 0.0;                    // no valid sample yet (BaroWatch gates this)
     }
     if (s_baroRefPa100 == 0) {
-        s_baroRefPa100 = b->pressure;  // capture power-on reference (zero point)
+        s_baroRefPa100 = b->pressure;  // belt and braces: the hook should have set it
     }
     double P  = (double)b->pressure;
     double P0 = (double)s_baroRefPa100;
@@ -636,6 +738,25 @@ void FS_ActiveLook_Mode0_Update(void)
     /* One-shot per-session proof that we actually connected (and to which serial). */
     FS_EngoBind_LogLinkedOnce();
 
+    /* Before anything can return: the barometer watch has to see every tick,
+     * or a silence that starts while a frame is held up below would be logged
+     * late, or with the wrong length. */
+    const bool baroFresh = BaroWatch();
+
+    /* Finish the frame already on its way before building another
+     * (2026-10-09, review finding F1-c). A frame that is still pending went out
+     * as far as its opening holdFlush(HOLD): the glasses are HELD, showing the
+     * previous picture until the closing FLUSH arrives. Two wake paths normally
+     * drain it — FS_ActiveLook_TxPoolAvailable and FS_ActiveLook_OnFlowResume —
+     * but the tick must not depend on them. Rebuilding here used to throw the
+     * remainder away and open a SECOND HOLD on top of the first, which is the
+     * nesting activelook.c's OnFlowResume comment warns about. So: try to send
+     * the rest now, and if the radio still pushes back, skip this tick. Nothing
+     * is lost — change detection below has not run, so whatever moved in the
+     * meantime is still "changed" on the next tick and gets drawn then. */
+    if (FS_ActiveLook_Mode0_HasPendingFrame() && !FS_ActiveLook_Mode0_DrainFrame())
+        return;
+
     const FS_GNSS_Data_t   *gnss = FS_GNSS_GetData();
     const FS_VBAT_Data_t   *vbat = FS_VBAT_GetData();
     const FS_Config_Data_t *cfg  = FS_Config_Get();
@@ -824,9 +945,14 @@ void FS_ActiveLook_Mode0_Update(void)
          * whole struct keeps its values and its fix flag, and the HUD would go
          * on showing a speed and a glide from some minutes ago as though they
          * were now. Dashes are honest; a stale number is not. */
+        /* The barometric altitude gets the same honesty from its own sensor:
+         * no good sample since switch-on, or none for BARO_STALE_MS, and it is
+         * dashes rather than the last height the barometer reported. A frozen
+         * altitude that looks live is the worst thing this panel could show. */
         if (entry == NULL ||
             (FS_HudLayout_FieldNeedsFix(el->field) &&
-             (gnss->gpsFix != 3 || FS_GNSS_IsStale()))) {
+             (gnss->gpsFix != 3 || FS_GNSS_IsStale())) ||
+            (el->field == FS_HUD_FIELD_BARO_ALT && !baroFresh)) {
             /* Unknown field, no 3D fix yet, or nothing fresh to draw. */
             snprintf(text[i], AL_MODE0_MAX_TEXT, "----");
             continue;
@@ -870,9 +996,10 @@ void FS_ActiveLook_Mode0_Update(void)
         s_lastComp[i]     = CompSig(&comp[i], compEl[i], compOn[i]);
     }
 
-    /* Build the whole frame as a packet list (any still-pending older frame is
-     * discarded — fresher data beats finishing a stale frame), then start
-     * draining it. If the TX pool pushes back mid-frame, the remainder goes out
+    /* Build the whole frame as a packet list, then start draining it. No older
+     * frame can still be pending here: the top of this function finished it or
+     * returned (until v0.0.46 a pending frame was discarded at this point, which
+     * left the glasses inside an unclosed HOLD). If the TX pool pushes back mid-frame, the remainder goes out
      * on the ACI_GATT_TX_POOL_AVAILABLE event via FS_ActiveLook_TxPoolAvailable()
      * — no full-second stall, no half-drawn frame left behind (the frame always
      * completes, ending with its FLUSH, unless the link drops entirely — and

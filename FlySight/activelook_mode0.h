@@ -26,6 +26,7 @@
 
 #include "activelook.h"
 #include <stdbool.h>
+#include <stdint.h>
 
 /**
  * Called once when the mode is selected, to reset and load config data.
@@ -50,6 +51,15 @@ void FS_ActiveLook_Mode0_Update(void);
  * NOT on glasses reconnect — a mid-flight reconnect must not re-zero altitude.
  */
 void FS_ActiveLook_Mode0_ResetBaroRef(void);
+
+/**
+ * Feed one completed barometer sample (pressure in Pa*100, as FS_Baro_Data_t
+ * reports it). Called from FS_Baro_DataReady_Callback for every good sample in
+ * ACTIVE, glasses or not: the first one after ResetBaroRef becomes the zero
+ * point, and the running count tells the HUD the barometer is still alive.
+ * Runs in the sensor-read completion callback — a compare and two stores.
+ */
+void FS_ActiveLook_Mode0_BaroSample(int32_t pressurePa100);
 
 /**
  * Semantic HUD version string (e.g. "0.0.13") for logging/telemetry.

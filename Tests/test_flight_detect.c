@@ -41,6 +41,22 @@ static uint32_t climb_until_detected(uint32_t t0)
 	return 0;   /* never fired: the CHECKs on the caller's side will say so */
 }
 
+#define WEEK_MS 604800000u
+
+/* Like climb_until_detected, but iTOW wraps at the end of the GPS week the
+ * way the receiver's does: returns the iTOW of the firing sample, or
+ * 0xFFFFFFFF if it never fired within `n` samples. */
+static uint32_t until_detected_wrapping(int32_t velD, uint32_t t0, int n)
+{
+	uint32_t t = t0;
+	for (int i = 0; i < n; i++)
+	{
+		if (step(velD, t, 3)) return t;
+		t = (t + 200u) % WEEK_MS;
+	}
+	return 0xFFFFFFFFu;
+}
+
 /* Feed N samples at 5 Hz (200 ms) with a constant velD, starting at t0.
  * Returns how many times Update() reported a rising edge. */
 static int feed(int32_t velD, uint8_t fix, uint32_t t0, int n, uint32_t *t_out)
@@ -169,6 +185,30 @@ int main(void)
 	step(-3000, 2000, 3);                 /* and on the far side of it */
 	CHECK(FS_FlightDetect_ElapsedSec(&sec) == true);
 	CHECK(sec == 102);
+
+	/* ---- The week rollover in the sustain windows ---------------------- */
+
+	/* 12. A climb that opens 4 s before iTOW restarts must still need its full
+	 *     8 s: it fires at iTOW 4000 of the new week, not on the first sample
+	 *     after the wrap (where tow - start, in uint32, is ~3.7 billion). */
+	FS_FlightDetect_Init();
+	CHECK(until_detected_wrapping(-3000, WEEK_MS - 4000u, 100) == 4000u);
+	CHECK(FS_FlightDetect_InFlight() == true);
+
+	/* 13. A rollover with no sustained climb triggers nothing: ground noise
+	 *     across the wrap, then a 3 s climb burst straddling it (window opens
+	 *     before, sample after the wrap must not satisfy the hold), then level. */
+	FS_FlightDetect_Init();
+	CHECK(until_detected_wrapping(300, WEEK_MS - 10000u, 100) == 0xFFFFFFFFu);
+	FS_FlightDetect_Init();
+	CHECK(until_detected_wrapping(-3000, WEEK_MS - 1000u, 15) == 0xFFFFFFFFu);
+	CHECK(until_detected_wrapping(0, 2000u, 50) == 0xFFFFFFFFu);
+	CHECK(FS_FlightDetect_InFlight() == false);
+
+	/* 14. Same for the freefall fallback: a window opened 400 ms before the
+	 *     wrap needs its 1 s, i.e. fires at iTOW 600, not at iTOW 0. */
+	FS_FlightDetect_Init();
+	CHECK(until_detected_wrapping(12000, WEEK_MS - 400u, 20) == 600u);
 
 	printf("flight_detect: %d/%d checks passed\n", g_checks - g_fail, g_checks);
 	return g_fail ? 1 : 0;

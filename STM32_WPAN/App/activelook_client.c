@@ -139,6 +139,7 @@ typedef struct
     /* Control / flow-control characteristic (...CB9) */
     uint8_t  ctrlCharFound;
     uint8_t  terminating;          /* a disconnect has been asked for already */
+    uint8_t  terminateRefusedLogged; /* "terminate refused" already logged on this link */
     uint8_t  batteryReadIssued;    /* first battery read already sent */
     uint8_t  ctrlSubscribeStarted; /* CB9 CCCD write was issued... */
     uint8_t  ctrlSubscribed;       /* ...and the procedure came back clean */
@@ -261,6 +262,7 @@ void FS_ActiveLook_Client_StartDiscovery(uint16_t connectionHandle)
     g_ctx.stopSinceTick         = 0;
     g_ctx.writeFailStreak       = 0;
     g_ctx.terminating           = 0;
+    g_ctx.terminateRefusedLogged = 0;
     g_ctx.negotiatedMTU         = 23;  /* reset to default; updated on MTU resp */
 
     g_ctx.whichService = SERVICE_NONE;
@@ -1058,11 +1060,34 @@ void FS_ActiveLook_Client_ForceDisconnect(void)
      * above the threshold is what made every following tick fire again. */
     if (g_ctx.terminating) return;
 
-    g_ctx.terminating    = 1;
-    g_ctx.writeFailStreak = 0;
+    if (g_ctx.connHandle == 0xFFFF)
+    {
+        /* No link to drop: nothing will ever answer, and nothing needs to. */
+        g_ctx.terminating = 1;
+        return;
+    }
 
-    if (g_ctx.connHandle != 0xFFFF)
-        (void)aci_gap_terminate(g_ctx.connHandle, 0x13); /* remote user terminated */
+    /* The latch is only worth keeping if a disconnection event is actually on
+     * its way, i.e. the controller accepted the terminate. It is cleared only
+     * by the link reset that event triggers. A refused terminate (controller
+     * busy, command disallowed in the current state) produces no event at all,
+     * so latching on it would silently disable every self-heal for the rest of
+     * this link: the glasses stay wedged until the user power-cycles something.
+     * On refusal leave the latch AND the write-fail streak alone so the very
+     * next AL_Rate tick trips the same watchdog and asks again. The refusal is
+     * logged once per link — a controller that keeps refusing would otherwise
+     * add a line every tick, and one line already tells the story. */
+    tBleStatus s = aci_gap_terminate(g_ctx.connHandle, 0x13); /* remote user terminated */
+    if (s == BLE_STATUS_SUCCESS)
+    {
+        g_ctx.terminating     = 1;
+        g_ctx.writeFailStreak = 0;
+    }
+    else if (!g_ctx.terminateRefusedLogged)
+    {
+        g_ctx.terminateRefusedLogged = 1;
+        FS_Log_WriteEventAsync("ENGO self-heal: terminate refused 0x%02X", (unsigned)s);
+    }
 }
 
 /******************************************************************************

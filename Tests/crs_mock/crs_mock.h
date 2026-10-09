@@ -49,6 +49,7 @@ typedef struct
 } FILINFO;
 
 #define f_eof(fp) ((fp)->pos >= 1)
+#define f_tell(fp) ((fp)->pos)
 
 typedef enum { FS_RESOURCE_FATFS = 2 } FS_Resource_t;
 typedef enum

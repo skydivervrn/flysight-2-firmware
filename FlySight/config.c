@@ -617,7 +617,18 @@ FS_Config_Result_t FS_Config_Read(const char *filename)
 		HANDLE_VALUE("Min_Angle", config.min_angle,    val, val >= 0 && val <= 360);
 
 		HANDLE_VALUE("AL_Mode",   config.al_mode,      val, val >= 0 && val <= 1);
-		HANDLE_VALUE("AL_Rate",   config.al_rate,      val, val >= 100);
+		/* HUD redraw period, ms. The floor of 100 is the original one: faster
+		 * risks over-driving the glasses' command buffer (see the default above;
+		 * 333 is the fastest rate actually flown).
+		 * The ceiling: al_rate is uint32_t and activelook.c turns it into
+		 * timer-server ticks as al_rate * 1000 / CFG_TS_TICK_VAL, so an
+		 * absurd value from a hand-edited card (anything above ~4.3 million)
+		 * wraps the multiply into a short, arbitrary period instead of a long
+		 * one. 5000 ms is already a HUD that updates once per five seconds —
+		 * useless in freefall, but still sane — and keeps the tick count
+		 * (~10240 at 488 us/tick) far from any overflow. Out-of-range values
+		 * are ignored like every other key here: the default stays. */
+		HANDLE_VALUE("AL_Rate",   config.al_rate,      val, val >= 100 && val <= 5000);
 
 		/* Out-of-range values are DROPPED, not folded to the nearest profile:
 		 * a card asking for a mode this build has never heard of is one written

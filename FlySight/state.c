@@ -141,6 +141,61 @@ uint8_t is_all_zeros(const void *buffer, size_t size) {
     return 1;
 }
 
+/* Initialize the BLE identity if needed: IRK, ERK and identity address.
+ *
+ * Called from BOTH paths of FS_State_Read — after a successful read (where
+ * only values missing from the file are generated) and on the early return
+ * when /flysight.txt cannot be opened (a fresh card, where all three are
+ * still zero). Whatever this produces, FS_State_Write persists on the same
+ * boot, so a fresh unit's first boot already runs with the identity every
+ * later boot reads back. Before, the early return left all three at zero:
+ * the device came up as C0:00:00:00:00:00 with a zero IRK, the zeros were
+ * written to the card, and the second boot replaced them — so the identity
+ * changed once, under any phone that had bonded on the first boot, and two
+ * fresh units shared one address.
+ *
+ * The IRK is what lets a bonded peer resolve our advertising address and
+ * the ERK is the encryption root key handed to the stack with it; both are
+ * part of what a bond depends on, so both must be non-zero and stable for
+ * the life of the card.
+ *
+ * The address: this is the fix for the reconnect bug. app_ble.c drew this address from
+ * the RNG on every power-up — the comment above that code claims it comes
+ * from the UDN, but CFG_STATIC_RANDOM_ADDRESS is not defined, so the else
+ * branch ran and the FlySight introduced itself under a NEW identity after
+ * every reboot. A central stores identity plus keys when it bonds; after the
+ * next power cycle the identity it stored no longer existed, which is why a
+ * pairing worked once and its reconnect did not, and why macOS ended up
+ * holding several records for one device. Generated once, kept in the state
+ * file beside the IRK, and stable for the life of the card from then on. */
+static void FS_State_InitIdentity(void)
+{
+	/* Initialize IRK if needed */
+	while (is_all_zeros(state.ble_irk, CONFIG_DATA_IR_LEN))
+	{
+		FS_Common_GetRandomBytes((uint32_t *) state.ble_irk, CONFIG_DATA_IR_LEN / 4);
+	}
+
+	/* Initialize ERK if needed */
+	while (is_all_zeros(state.ble_erk, CONFIG_DATA_ER_LEN))
+	{
+		FS_Common_GetRandomBytes((uint32_t *) state.ble_erk, CONFIG_DATA_ER_LEN / 4);
+	}
+
+	/* Initialize the identity address if needed */
+	while (is_all_zeros(state.ble_addr, sizeof(state.ble_addr)))
+	{
+		uint32_t words[2];
+		state.ble_addr_is_new = 1;
+		FS_Common_GetRandomBytes(words, 2);
+		memcpy(state.ble_addr, words, sizeof(state.ble_addr));
+		/* A static random address must have both top bits set (Core spec,
+		 * Vol 6 Part B 1.3.2.1); the byte order here is the little-endian one
+		 * the controller is given, so the most significant byte is the last. */
+		state.ble_addr[5] |= 0xC0;
+	}
+}
+
 void FS_State_Read(void)
 {
 	char    buffer[100];
@@ -183,6 +238,14 @@ void FS_State_Read(void)
 		 * ever appears in the file, the state read did NOT happen. */
 		FS_BleDiag_Log("STATE open=FAIL fr=%u defaults reset_ble=%u enable_ble=%u",
 				(unsigned) fr, (unsigned) state.reset_ble, (unsigned) state.enable_ble);
+
+		/* No file values are read on this path — every setting keeps its
+		 * default — but the BLE identity (IRK, ERK, address) is GENERATED here,
+		 * not left at zero. This is the path every FRESH card takes (no
+		 * /flysight.txt yet); see FS_State_InitIdentity for what the zeros
+		 * used to cost. reset_ble stays 0 exactly as set above: see the
+		 * reset_ble comment for why it must not change on this path. */
+		FS_State_InitIdentity();
 		return;
 	}
 
@@ -252,40 +315,7 @@ void FS_State_Read(void)
 	state.device_id[1] = HAL_GetUIDw1();
 	state.device_id[2] = HAL_GetUIDw2();
 
-	/* Initialize IRK if needed */
-	while (is_all_zeros(state.ble_irk, CONFIG_DATA_IR_LEN))
-	{
-		FS_Common_GetRandomBytes((uint32_t *) state.ble_irk, CONFIG_DATA_IR_LEN / 4);
-	}
-
-	/* Initialize ERK if needed */
-	while (is_all_zeros(state.ble_erk, CONFIG_DATA_ER_LEN))
-	{
-		FS_Common_GetRandomBytes((uint32_t *) state.ble_erk, CONFIG_DATA_ER_LEN / 4);
-	}
-
-	/* Initialize the identity address if needed.
-	 *
-	 * This is the fix for the reconnect bug. app_ble.c drew this address from
-	 * the RNG on every power-up — the comment above that code claims it comes
-	 * from the UDN, but CFG_STATIC_RANDOM_ADDRESS is not defined, so the else
-	 * branch ran and the FlySight introduced itself under a NEW identity after
-	 * every reboot. A central stores identity plus keys when it bonds; after the
-	 * next power cycle the identity it stored no longer existed, which is why a
-	 * pairing worked once and its reconnect did not, and why macOS ended up
-	 * holding several records for one device. Generated once, kept in the state
-	 * file beside the IRK, and stable for the life of the card from then on. */
-	while (is_all_zeros(state.ble_addr, sizeof(state.ble_addr)))
-	{
-		uint32_t words[2];
-		state.ble_addr_is_new = 1;
-		FS_Common_GetRandomBytes(words, 2);
-		memcpy(state.ble_addr, words, sizeof(state.ble_addr));
-		/* A static random address must have both top bits set (Core spec,
-		 * Vol 6 Part B 1.3.2.1); the byte order here is the little-endian one
-		 * the controller is given, so the most significant byte is the last. */
-		state.ble_addr[5] |= 0xC0;
-	}
+	FS_State_InitIdentity();
 
 	/* The IRK is what lets a bonded peer resolve OUR advertising address, and it
 	 * is re-read from the card on every boot — so log its first bytes. If it ever

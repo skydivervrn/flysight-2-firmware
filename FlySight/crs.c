@@ -680,6 +680,19 @@ static FS_CRS_State_t FS_CRS_State_Write(void)
 				}
 				else
 				{
+					/* A packet goes into the file exactly when it is ACKed, never
+					 * otherwise. f_write commits the bytes before we know whether
+					 * the ACK can be queued: when the TX pool is full the ACK is
+					 * lost, next_packet stays put, the phone retransmits the same
+					 * packet and — without a rollback — its bytes land in the file
+					 * twice. A short write is the same problem in miniature: we NAK,
+					 * but the bw bytes it did write stay ahead of the retransmit.
+					 * So remember where this packet starts and seek back there on
+					 * every path that does not end in a queued ACK; the retransmit
+					 * then overwrites the same range instead of appending to it. */
+					FSIZE_t packet_pos = f_tell(&file);
+					uint8_t acked = 0;
+
 					bw = 0;
 					result = f_write(&file, &rx_buffer[2], expected, &bw);
 					if ((result == FR_OK) && (bw == expected))
@@ -687,6 +700,7 @@ static FS_CRS_State_t FS_CRS_State_Write(void)
 						if (FS_CRS_SendPacket(FS_CRS_COMMAND_FILE_ACK,
 								&rx_buffer[1], 1))
 						{
+							acked = 1;
 							++next_packet;
 							HW_TS_Start(ack_timer_id, RX_TIMEOUT_TICKS);
 						}
@@ -694,6 +708,16 @@ static FS_CRS_State_t FS_CRS_State_Write(void)
 					else
 					{
 						FS_CRS_SendNak(FS_CRS_COMMAND_FILE_DATA);
+					}
+
+					if (!acked && (f_lseek(&file, packet_pos) != FR_OK))
+					{
+						/* The file now holds bytes we cannot take back. ACKing
+						 * any later packet would hand the phone a "success" for a
+						 * corrupt file, so end the transfer here: NAK, and the
+						 * IDLE path below closes the file and frees FatFs. */
+						FS_CRS_SendNak(FS_CRS_COMMAND_FILE_DATA);
+						next_state = FS_CRS_STATE_IDLE;
 					}
 				}
 			}

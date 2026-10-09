@@ -25,6 +25,7 @@
 
 #include "main.h"
 #include "app_common.h"
+#include "activelook_mode0.h"
 #include "audio_control.h"
 #include "baro.h"
 #include "charge.h"
@@ -39,6 +40,7 @@
 #include "log.h"
 #include "mag.h"
 #include "state.h"
+#include "stm32_seq.h"
 #include "rtc_util.h"
 #include "time.h"
 #include "vbat.h"
@@ -56,6 +58,10 @@ static uint8_t led_timer_id;
 static uint8_t health_timer_id;
 static bool gnssWasStale;
 static bool gnssHadFix;
+
+/* Set by the 1 s timer (ISR context), consumed by the health task. See
+ * FS_ActiveControl_Health_Timer for why the check itself moved to a task. */
+static volatile bool healthDue;
 
 static volatile bool hasFix;
 static volatile bool rtcUpdated;
@@ -79,8 +85,15 @@ void FS_ActiveControl_RawReady_Callback(void);
  * together: a device that loses GNSS is often the same device whose radio link
  * to the glasses is struggling, and a check that only runs while the glasses
  * are connected misses exactly the case worth recording. */
-static void FS_ActiveControl_Health_Timer(void)
+static void FS_ActiveControl_Health_Task(void)
 {
+	if (!healthDue) return;
+	healthDue = false;
+
+	/* A tick that fired just before FS_ActiveControl_DeInit can still be
+	 * queued in the sequencer when it runs; it has nothing to say then. */
+	if (state != FS_CONTROL_ACTIVE) return;
+
 	const FS_GNSS_Data_t *data = FS_GNSS_GetData();
 	const bool stale = FS_GNSS_IsStale();
 	const bool hasFix3D = (data->gpsFix == 3) && !stale;
@@ -127,6 +140,22 @@ static void FS_ActiveControl_Health_Timer(void)
 	}
 }
 
+/* The timer only RAISES the check; the sequencer runs it (2026-10-09, review
+ * finding F1-d). HW_TS callbacks registered with CFG_TIM_PROC_ID_ISR run in
+ * interrupt context, and the check above writes EVENT.CSV lines through
+ * FS_Log_WriteEventAsync — whose slot reservation in log.c is an unguarded
+ * read-modify-write of the event write index around a vsnprintf. The GNSS data
+ * callback writes event lines through the same function from task context
+ * ("Flight detected", "Comp window open"), so a timer firing in the middle of
+ * one of those could take the same slot and mangle or lose a line. Moving the
+ * body to a task serialises every writer under the sequencer without touching
+ * log.c. Cadence and lines are unchanged: one check per second, same text. */
+static void FS_ActiveControl_Health_Timer(void)
+{
+	healthDue = true;
+	UTIL_SEQ_SetTask(1<<CFG_TASK_FS_ACTIVE_HEALTH_ID, CFG_SCH_PRIO_1);
+}
+
 static void FS_ActiveControl_LED_Timer(void)
 {
 	// Turn on LED
@@ -158,6 +187,8 @@ void FS_ActiveControl_Init(void)
 	 * ready and its line is dropped. */
 	gnssWasStale = true;
 	gnssHadFix = false;
+	healthDue = false;
+	UTIL_SEQ_RegTask(1<<CFG_TASK_FS_ACTIVE_HEALTH_ID, UTIL_SEQ_RFU, FS_ActiveControl_Health_Task);
 	HW_TS_Create(CFG_TIM_PROC_ID_ISR, &health_timer_id, hw_ts_Repeated, FS_ActiveControl_Health_Timer);
 	HW_TS_Start(health_timer_id, HEALTH_TIMER_TICKS);
 
@@ -165,6 +196,14 @@ void FS_ActiveControl_Init(void)
 	hasFix = false;
 	rtcUpdated = false;
 	state = FS_CONTROL_ACTIVE;
+
+	/* Re-zero the HUD's barometric altitude on EVERY ACTIVE entry (2026-10-09,
+	 * review finding F1-b). FS_ActiveLook_Init does this too, but only runs
+	 * when AL_Mode is on; this runs always, and — like it — before
+	 * FS_Baro_Start (active_mode.c), so the first sample after switch-on is
+	 * the one FS_Baro_DataReady_Callback below hands over as the zero point.
+	 * Not on a glasses reconnect: that must never re-zero mid-flight. */
+	FS_ActiveLook_Mode0_ResetBaroRef();
 
 	// Reset takeoff/flight detector (display + log only; no behaviour change)
 	FS_FlightDetect_Init();
@@ -206,6 +245,12 @@ void FS_ActiveControl_DeInit(void)
 void FS_Baro_DataReady_Callback(void)
 {
 	if (state != FS_CONTROL_ACTIVE) return;
+
+	/* Every good sample, glasses connected or not: the first one after
+	 * switch-on becomes the HUD altitude's zero point, and the count is how the
+	 * HUD knows the barometer is still alive. This runs in the sensor-read
+	 * completion callback, so the hook is a compare and two stores, no more. */
+	FS_ActiveLook_Mode0_BaroSample(FS_Baro_GetData()->pressure);
 
 	if (FS_Config_Get()->enable_logging)
 	{

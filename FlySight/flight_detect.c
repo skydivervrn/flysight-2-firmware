@@ -55,6 +55,20 @@ void FS_FlightDetect_Init(void)
 	s_lastTOW       = 0;
 }
 
+/* Milliseconds from `start` forward to `tow`, both iTOW. The sustain windows
+ * used to take (uint32_t)(tow - start) directly, which is right everywhere
+ * except across the Sunday rollover: a window opened at 604799000 and checked
+ * at 100 gives ~3.7 billion ms, so the climb (or freefall) hold was "met" on
+ * the first sample of the new week, whatever the aircraft was doing. iTOW
+ * wraps modulo one week, not modulo 2^32, so the forward distance is the
+ * difference modulo one week. */
+static uint32_t FS_FD_ForwardMs(uint32_t tow, uint32_t start)
+{
+	uint32_t delta = tow - start;
+	if (tow < start) delta += FS_FD_WEEK_MS;
+	return delta;
+}
+
 bool FS_FlightDetect_InFlight(void)
 {
 	return s_inFlight;
@@ -119,7 +133,7 @@ bool FS_FlightDetect_Update(const FS_GNSS_Data_t *d)
 			s_climbActive   = true;
 			s_climbStartTOW = tow;
 		}
-		else if ((uint32_t)(tow - s_climbStartTOW) >= FS_FD_CLIMB_HOLD_MS)
+		else if (FS_FD_ForwardMs(tow, s_climbStartTOW) >= FS_FD_CLIMB_HOLD_MS)
 		{
 			s_inFlight   = true;
 			s_takeoffTOW = tow;                        /* clock epoch          */
@@ -140,7 +154,7 @@ bool FS_FlightDetect_Update(const FS_GNSS_Data_t *d)
 			s_ffActive   = true;
 			s_ffStartTOW = tow;
 		}
-		else if ((uint32_t)(tow - s_ffStartTOW) >= FS_FD_FREEFALL_HOLD_MS)
+		else if (FS_FD_ForwardMs(tow, s_ffStartTOW) >= FS_FD_FREEFALL_HOLD_MS)
 		{
 			s_inFlight   = true;
 			s_takeoffTOW = tow;                        /* clock epoch          */
