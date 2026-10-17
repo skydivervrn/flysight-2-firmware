@@ -60,6 +60,11 @@ uint16_t FS_ActiveLook_Client_WriteFailStreak(void);
  * event then resets the client/FSM and restarts scanning (self-heal). */
 void FS_ActiveLook_Client_ForceDisconnect(void);
 
+/* True while a ForceDisconnect on the current link has been refused by the
+ * controller and not yet accepted — i.e. the link is still up and still owed
+ * a terminate. The FSM polls this to retry (see FS_ActiveLook_OnTerminateRefused). */
+bool FS_ActiveLook_Client_TerminatePending(void);
+
 /**
  * @brief Enable battery notifications for the standard Battery Service.
  *        This writes 0x01 to the CCC descriptor of the Battery Level char.

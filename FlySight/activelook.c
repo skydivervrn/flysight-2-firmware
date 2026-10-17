@@ -33,6 +33,14 @@ static uint8_t timer_id;
 static volatile uint8_t s_discoveryInProgress;
 static volatile uint8_t s_discoveryTimedOut;
 
+/* A terminate the controller refused is being asked again on every tick of
+ * the shared timer (AL_Rate period) until it is taken or the link is gone.
+ * See FS_ActiveLook_OnTerminateRefused. The timer callback runs in interrupt
+ * context, so it only raises s_terminateRetryDue; the HCI call is made from
+ * the sequencer task. */
+static volatile uint8_t s_terminateRetry;
+static volatile uint8_t s_terminateRetryDue;
+
 #define FS_ACTIVELOOK_DISCOVERY_TIMEOUT_MS 10000u
 #define FS_ACTIVELOOK_DISCOVERY_TIMEOUT_TICKS \
     (FS_ACTIVELOOK_DISCOVERY_TIMEOUT_MS * 1000u / CFG_TS_TICK_VAL)
@@ -141,6 +149,29 @@ static void OnActiveLookDiscoveryComplete(void)
 static void FS_ActiveLook_Task(void)
 {
     char tmp[32];
+
+    if (s_terminateRetryDue)
+    {
+        s_terminateRetryDue = 0;
+
+        /* Ask again. A further refusal comes back through
+         * FS_ActiveLook_OnTerminateRefused, which leaves the retry armed; the
+         * client logs the refusal once per link, not once per attempt. */
+        if (FS_ActiveLook_Client_TerminatePending())
+            FS_ActiveLook_Client_ForceDisconnect();
+
+        /* Taken (the disconnection event is on its way, and its
+         * FS_ActiveLook_OnDisconnect resets everything and app_ble.c rescans,
+         * exactly as after any other disconnect) or the link has already
+         * gone. Either way there is nothing left to ask for. */
+        if (!FS_ActiveLook_Client_TerminatePending())
+        {
+            s_terminateRetry = 0;
+            if (s_running)
+                HW_TS_Stop(timer_id);
+        }
+        return;
+    }
 
     if (s_discoveryTimedOut)
     {
@@ -367,7 +398,14 @@ static void FS_ActiveLook_Task(void)
 
 static void FS_ActiveLook_Timer(void)
 {
-    if (s_discoveryInProgress)
+    if (s_terminateRetry)
+    {
+        /* The link is being torn down; drawing on it or timing out its
+         * discovery again would only get in the way. */
+        s_terminateRetryDue = 1;
+        UTIL_SEQ_SetTask(1 << CFG_TASK_FS_ACTIVELOOK_ID, CFG_SCH_PRIO_0);
+    }
+    else if (s_discoveryInProgress)
     {
         s_discoveryTimedOut = 1;
         UTIL_SEQ_SetTask(1 << CFG_TASK_FS_ACTIVELOOK_ID, CFG_SCH_PRIO_0);
@@ -393,9 +431,58 @@ void FS_ActiveLook_OnDiscoveryStart(void)
     if (!s_running) return;
 
     s_discoveryTimedOut = 0;
+    s_terminateRetry = 0;     /* a new link owes nothing (the old one reset this) */
+    s_terminateRetryDue = 0;
     s_discoveryInProgress = 1;
     HW_TS_Stop(timer_id);
     HW_TS_Start(timer_id, FS_ACTIVELOOK_DISCOVERY_TIMEOUT_TICKS);
+}
+
+/*******************************************************************************
+ * Called from activelook_client.c when the controller refuses aci_gap_terminate
+ * (task context: the FSM task or the HCI event task, never an interrupt).
+ *
+ * The discovery timeout and the GATT setup failures ask exactly once, and on
+ * those paths no frame is ever written that could trip anything again. A
+ * refusal there used to leave the link up — useless, and holding the glasses'
+ * only central slot, so they could not be found again either — with the HUD
+ * dead until the glasses dropped the link themselves.
+ *
+ * So a refusal before the HUD is up (s_state still INIT: discovery or GATT
+ * setup) arms a retry loop on the shared timer at the AL_Rate period: each
+ * tick asks again until the controller accepts or the link is gone
+ * (FS_ActiveLook_Task). The discovery watchdog has done its job by then and is
+ * disarmed, so it cannot log a second "discovery timeout" for the same fault.
+ * This is not a connect timeout — it never gives up on the glasses, it only
+ * finishes tearing down a link that is already up and already judged broken,
+ * after which the normal disconnect path reconnects.
+ *
+ * Once the HUD is up the self-heal watchdogs in AL_STATE_UPDATE already ask
+ * again on every tick for as long as their condition holds, and stop asking —
+ * keeping a link that has recovered on its own — when it clears. That
+ * behaviour is left exactly as it was.
+ *
+ * Outside ACTIVE the timer has been deleted; the client hands a refusal then
+ * (a late discovery callback, a setup failure after teardown) to app_ble.c
+ * instead (APP_BLE_Engo_TerminateRefused), which retries on its own timer.
+ ******************************************************************************/
+void FS_ActiveLook_OnTerminateRefused(void)
+{
+    if (!s_running)
+        return;   /* timer deleted; app_ble.c owns the retry outside ACTIVE */
+
+    if (s_state != AL_STATE_INIT)
+        return;   /* HUD up: the self-heal watchdogs re-ask on every tick */
+
+    if (s_terminateRetry)
+        return;   /* already retrying: keep the cadence, do not restart it */
+
+    s_terminateRetry    = 1;
+    s_terminateRetryDue = 0;
+    s_discoveryInProgress = 0;
+    s_discoveryTimedOut   = 0;
+    HW_TS_Stop(timer_id);
+    HW_TS_Start(timer_id, FS_Config_Get()->al_rate * 1000 / CFG_TS_TICK_VAL);
 }
 
 /*******************************************************************************
@@ -443,6 +530,8 @@ void FS_ActiveLook_OnDisconnect(void)
         HW_TS_Stop(timer_id);
     s_discoveryInProgress = 0;
     s_discoveryTimedOut = 0;
+    s_terminateRetry = 0;
+    s_terminateRetryDue = 0;
 
     /* Reset FSM to disconnected/idle — OnActiveLookDiscoveryComplete will
      * restart it cleanly when the glasses reconnect. */
@@ -483,6 +572,8 @@ void FS_ActiveLook_Init(void)
     s_state = AL_STATE_INIT;
     s_discoveryInProgress = 0;
     s_discoveryTimedOut = 0;
+    s_terminateRetry = 0;
+    s_terminateRetryDue = 0;
 
     /* Scan only after a valid glasses binding was loaded. */
     if (FS_EngoBind_IsBound())
@@ -504,6 +595,8 @@ void FS_ActiveLook_DeInit(void)
 	s_state = AL_STATE_INIT;
 	s_discoveryInProgress = 0;
 	s_discoveryTimedOut = 0;
+	s_terminateRetry = 0;
+	s_terminateRetryDue = 0;
 
 	/* Delete update timer */
 	HW_TS_Stop(timer_id);

@@ -80,6 +80,8 @@ void APP_BLE_RequestPairing(void (*Callback)(void));
 void APP_BLE_CancelPairing(void);
 void APP_BLE_UpdateDeviceName(void);
 void APP_BLE_Reset(void);
+/* A terminate of the glasses link was refused outside ACTIVE: keep asking. */
+void APP_BLE_Engo_TerminateRefused(uint8_t status);
 /* USER CODE END EF */
 
 #ifdef __cplusplus

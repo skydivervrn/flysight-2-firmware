@@ -34,6 +34,8 @@
 #include "version.h"    // For GIT_TAG
 #include "state.h"      // For FS_State_Get()->device_id
 #include "dbg_trace.h"
+#include "cp_log.h"
+#include "log.h"
 
 // Device State (DS) Control Point command opcodes
 #define DS_CMD_GET_FW_VERSION  0x01 // Payload: (none)
@@ -67,6 +69,7 @@ typedef struct
     FS_TerminalAction_t terminal_action;
     bool waiting_for_tx;
     bool waiting_for_completion;
+    uint32_t cplog_seq;          /* the request's record in the CP trace */
 } DS_PendingRequest_t;
 
 extern uint8_t SizeDs_Control_Point; // From custom_stm.c
@@ -77,7 +80,8 @@ static DS_PendingRequest_t pending_request = {
     FS_MODE_STATE_COUNT,
     FS_TERMINAL_ACTION_NONE,
     false,
-    false
+    false,
+    0
 };
 
 static uint8_t mode_result_to_cp_status(FS_Mode_RequestResult_t result);
@@ -95,6 +99,68 @@ static void send_response(uint8_t received_cmd_opcode, uint8_t status,
                           const uint8_t *response_data,
                           uint8_t response_data_len,
                           BLE_TX_Queue_callback_t callback);
+
+/* CP request trace (cp_log.h explains why it is buffered). Records are added
+ * from the write handler (HCI event task) and completed from
+ * run_pending_request, which the response fallback timer can reach in
+ * interrupt context — so every touch of the ring is under PRIMASK, like
+ * pending_request itself. Formatting and logging happen outside it. */
+static uint32_t cplog_add(uint8_t opcode, uint8_t status, uint8_t mode, bool deferred)
+{
+    uint32_t seq;
+    uint32_t primask_bit = __get_PRIMASK();
+
+    __disable_irq();
+    seq = FS_CpLog_Add(opcode, status, mode, deferred);
+    __set_PRIMASK(primask_bit);
+    return seq;
+}
+
+static void cplog_amend(uint32_t seq, uint8_t status)
+{
+    uint32_t primask_bit = __get_PRIMASK();
+
+    __disable_irq();
+    FS_CpLog_Amend(seq, status);
+    __set_PRIMASK(primask_bit);
+}
+
+static void cplog_set_run(uint32_t seq, uint8_t result)
+{
+    uint32_t primask_bit = __get_PRIMASK();
+
+    __disable_irq();
+    FS_CpLog_SetRun(seq, result);
+    __set_PRIMASK(primask_bit);
+}
+
+/* Task context only (FS_Log_WriteEventAsync's slot reservation is not
+ * interrupt-safe). Writes at most one line per call, and only when the event
+ * log is open and has a free slot — otherwise the record stays in RAM for a
+ * later call instead of being dropped. Called after every CP request and from
+ * the 1 s ACTIVE health task, so a backlog from SLEEP drains at 1 line/s. */
+void DeviceState_FlushCpLog(void)
+{
+    FS_CpLog_Record_t rec;
+    uint32_t dropped;
+    bool have;
+    char line[64];
+    uint32_t primask_bit;
+
+    if (!FS_Log_EventSlotFree()) {
+        return;
+    }
+
+    primask_bit = __get_PRIMASK();
+    __disable_irq();
+    have = FS_CpLog_Take(&rec, &dropped);
+    __set_PRIMASK(primask_bit);
+
+    if (have) {
+        FS_CpLog_Format(line, sizeof(line), &rec, dropped);
+        FS_Log_WriteEventAsync("%s", line);
+    }
+}
 
 void DeviceState_Init(void) {
     HW_TS_Create(CFG_TIM_PROC_ID_ISR, &response_timer_id,
@@ -124,12 +190,15 @@ void DeviceState_Handle_DS_ControlPointWrite(const uint8_t *payload, uint8_t len
     uint8_t status = CP_STATUS_ERROR_UNKNOWN;
     uint8_t response_data_buf[MAX_CP_OPTIONAL_RESPONSE_DATA_LEN];
     uint8_t response_data_len = 0;
+    const uint8_t mode_before = (uint8_t)FS_Mode_State();
+    bool deferred;
     DS_PendingRequest_t request = {
         DS_PENDING_REQUEST_NONE,
         FS_MODE_STATE_COUNT,
         FS_TERMINAL_ACTION_NONE,
         false,
-        false
+        false,
+        0
     };
 
     if (length < 1) {
@@ -216,11 +285,16 @@ void DeviceState_Handle_DS_ControlPointWrite(const uint8_t *payload, uint8_t len
         }
     }
 
-    if ((status == CP_STATUS_SUCCESS) &&
-        (request.kind != DS_PENDING_REQUEST_NONE) &&
-        !arm_pending_request(&request, notification_enabled_flag != 0)) {
+    /* Recorded before arming, so the deferred run can always find its
+     * record through pending_request.cplog_seq. */
+    deferred = (status == CP_STATUS_SUCCESS) &&
+               (request.kind != DS_PENDING_REQUEST_NONE);
+    request.cplog_seq = cplog_add(received_cmd_opcode, status, mode_before, deferred);
+
+    if (deferred && !arm_pending_request(&request, notification_enabled_flag != 0)) {
         status = CP_STATUS_BUSY;
         request.kind = DS_PENDING_REQUEST_NONE;
+        cplog_amend(request.cplog_seq, status);
     }
 
     if (notification_enabled_flag) {
@@ -235,6 +309,8 @@ void DeviceState_Handle_DS_ControlPointWrite(const uint8_t *payload, uint8_t len
     if ((request.kind != DS_PENDING_REQUEST_NONE) && !notification_enabled_flag) {
         HW_TS_Start(response_timer_id, DS_RESPONSE_DEFER_TICKS);
     }
+
+    DeviceState_FlushCpLog();
 }
 
 void DeviceState_Handle_DS_ControlPointNotificationComplete(uint16_t attr_handle)
@@ -322,6 +398,7 @@ static DS_PendingRequest_t take_pending_request(void)
     pending_request.terminal_action = FS_TERMINAL_ACTION_NONE;
     pending_request.waiting_for_tx = false;
     pending_request.waiting_for_completion = false;
+    pending_request.cplog_seq = 0;
     __set_PRIMASK(primask_bit);
 
     return request;
@@ -336,6 +413,10 @@ static void run_pending_request(void)
         result = FS_Mode_RequestState(request.target_state);
     } else if (request.kind == DS_PENDING_REQUEST_TERMINAL) {
         result = FS_Mode_RequestTerminalAction(request.terminal_action);
+    }
+
+    if (request.kind != DS_PENDING_REQUEST_NONE) {
+        cplog_set_run(request.cplog_seq, (uint8_t)result);
     }
 
     if ((request.kind != DS_PENDING_REQUEST_NONE) &&

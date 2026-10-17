@@ -30,6 +30,7 @@
 #include "dbg_trace.h"
 #include "ble.h"
 #include "tl.h"
+#include "app_ble.h"
 #include <string.h>
 
 #ifndef UNPACK_2_BYTE_PARAMETER
@@ -139,6 +140,7 @@ typedef struct
     /* Control / flow-control characteristic (...CB9) */
     uint8_t  ctrlCharFound;
     uint8_t  terminating;          /* a disconnect has been asked for already */
+    uint8_t  terminateRefused;     /* the last terminate was refused: still owed */
     uint8_t  terminateRefusedLogged; /* "terminate refused" already logged on this link */
     uint8_t  batteryReadIssued;    /* first battery read already sent */
     uint8_t  ctrlSubscribeStarted; /* CB9 CCCD write was issued... */
@@ -262,6 +264,7 @@ void FS_ActiveLook_Client_StartDiscovery(uint16_t connectionHandle)
     g_ctx.stopSinceTick         = 0;
     g_ctx.writeFailStreak       = 0;
     g_ctx.terminating           = 0;
+    g_ctx.terminateRefused      = 0;
     g_ctx.terminateRefusedLogged = 0;
     g_ctx.negotiatedMTU         = 23;  /* reset to default; updated on MTU resp */
 
@@ -1076,18 +1079,48 @@ void FS_ActiveLook_Client_ForceDisconnect(void)
      * On refusal leave the latch AND the write-fail streak alone so the very
      * next AL_Rate tick trips the same watchdog and asks again. The refusal is
      * logged once per link — a controller that keeps refusing would otherwise
-     * add a line every tick, and one line already tells the story. */
+     * add a line every tick, and one line already tells the story.
+     *
+     * Only the self-heal watchdogs come back on their own, though. The other
+     * callers — the 10 s discovery timeout and the GATT setup failures — ask
+     * once, and on those paths no frame is ever written, so nothing trips
+     * again: a refused terminate there left a link that was up, useless and
+     * holding the glasses' only central slot, with the HUD dead until the
+     * glasses gave up on it themselves. So a refusal is now also handed to
+     * whoever can ask again: the FSM while ACTIVE (before the HUD is up it
+     * retries on every AL_Rate tick; after, the watchdogs above already do),
+     * app_ble.c outside ACTIVE (the FSM timer is deleted then). They keep
+     * asking until the controller takes it or the link is gone. This is
+     * not a connect timeout: it only ever tears down a link that is already
+     * up and already judged broken. */
     tBleStatus s = aci_gap_terminate(g_ctx.connHandle, 0x13); /* remote user terminated */
     if (s == BLE_STATUS_SUCCESS)
     {
-        g_ctx.terminating     = 1;
-        g_ctx.writeFailStreak = 0;
+        g_ctx.terminating      = 1;
+        g_ctx.terminateRefused = 0;
+        g_ctx.writeFailStreak  = 0;
+        return;
     }
-    else if (!g_ctx.terminateRefusedLogged)
+
+    g_ctx.terminateRefused = 1;
+    if (!g_ctx.terminateRefusedLogged)
     {
         g_ctx.terminateRefusedLogged = 1;
         FS_Log_WriteEventAsync("ENGO self-heal: terminate refused 0x%02X", (unsigned)s);
     }
+    if (FS_ActiveLook_IsRunning())
+        FS_ActiveLook_OnTerminateRefused();
+    else
+        APP_BLE_Engo_TerminateRefused(s);
+}
+
+/* A disconnect was asked for on this link and the controller has not accepted
+ * it yet. False once it has been accepted (the disconnection event is on its
+ * way) and after the link reset, which clears the whole context. */
+bool FS_ActiveLook_Client_TerminatePending(void)
+{
+    return g_ctx.terminateRefused && !g_ctx.terminating
+        && (g_ctx.connHandle != 0xFFFF);
 }
 
 /******************************************************************************

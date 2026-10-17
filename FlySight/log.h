@@ -24,6 +24,8 @@
 #ifndef LOG_H_
 #define LOG_H_
 
+#include <stdbool.h>
+
 #include "baro.h"
 #include "gnss.h"
 #include "hum.h"
@@ -51,5 +53,10 @@ void FS_Log_WriteIMUData(const FS_IMU_Data_t *current);
 void FS_Log_WriteVBATData(const FS_VBAT_Data_t *current);
 void FS_Log_WriteEvent(const char *format, ...);
 void FS_Log_WriteEventAsync(const char *format, ...);
+
+/* True when an event log is open and FS_Log_WriteEventAsync would queue a line
+ * now rather than drop it (the async event buffer has only EVENT_COUNT slots).
+ * For writers that hold a line back until it can actually be recorded. */
+bool FS_Log_EventSlotFree(void);
 
 #endif /* LOG_H_ */

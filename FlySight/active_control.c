@@ -31,6 +31,7 @@
 #include "charge.h"
 #include "config.h"
 #include "custom_app.h"
+#include "device_state.h"
 #include "comp_corridor.h"
 #include "flight_detect.h"
 #include "gnss.h"
@@ -93,6 +94,11 @@ static void FS_ActiveControl_Health_Task(void)
 	/* A tick that fired just before FS_ActiveControl_DeInit can still be
 	 * queued in the sequencer when it runs; it has nothing to say then. */
 	if (state != FS_CONTROL_ACTIVE) return;
+
+	/* Control-point requests that arrived while no log was open (in SLEEP:
+	 * typically the "Switch to ACTIVE" that opened this session and any
+	 * failed attempts before it) are written here, one line per second. */
+	DeviceState_FlushCpLog();
 
 	const FS_GNSS_Data_t *data = FS_GNSS_GetData();
 	const bool stale = FS_GNSS_IsStale();

@@ -10,7 +10,7 @@ PYTHON = python3
 
 TESTS = test_time test_activelook test_flight_detect test_engo_bind test_hud_layout \
         test_ble_diag test_activelook_adv test_activelook_fsm test_crs test_nav_arrow \
-        test_comp_corridor test_activelook_mode0
+        test_comp_corridor test_activelook_mode0 test_device_state
 
 all: $(TESTS)
 
@@ -96,6 +96,25 @@ test_activelook_mode0: test_activelook_mode0.c ../FlySight/activelook_mode0.c \
 	   build_al_mode0/test_activelook_mode0.c build_al_mode0/activelook_mode0.c \
 	   $(MODE0_PURE) -lm
 
+# The Device State control point and its EVENT.CSV trace. Same copy-next-to-
+# mocks trick: device_state.c says #include "main.h"/"custom_stm.h"/"log.h",
+# which would find the CubeMX chain and the real log if compiled in place. The
+# trace ring (cp_log.c), mode.h and the CP protocol header are the real ones.
+# -Wno-format: upstream's device-ID hex dump prints a uint32_t with %08lx —
+# right on the target (uint32_t is unsigned long there), wrong on a 64-bit host.
+DS_MOCKS = ds_mock/main.h ds_mock/custom_stm.h ds_mock/ble_tx_queue.h \
+           ds_mock/version.h ds_mock/state.h ds_mock/dbg_trace.h ds_mock/log.h
+
+test_device_state: test_device_state.c ../FlySight/device_state.c ../FlySight/device_state.h \
+                   ../FlySight/cp_log.c ../FlySight/cp_log.h ../FlySight/mode.h \
+                   ../STM32_WPAN/App/control_point_protocol.h $(DS_MOCKS)
+	rm -rf build_device_state && mkdir build_device_state
+	cp test_device_state.c ../FlySight/device_state.c ../FlySight/device_state.h \
+	   ../FlySight/cp_log.c ../FlySight/cp_log.h ../FlySight/mode.h \
+	   ../STM32_WPAN/App/control_point_protocol.h $(DS_MOCKS) build_device_state/
+	$(CC) $(CFLAGS) -Wno-format -o test_device_state build_device_state/test_device_state.c \
+	   build_device_state/device_state.c build_device_state/cp_log.c
+
 # Compile the real CRS state machine beside host-only definitions of its
 # FatFs, BLE queue, scheduler, timer and resource-manager dependencies.
 test_crs: test_crs.c crs_mock/crs_mock.h ../FlySight/crs.c ../FlySight/crs.h
@@ -116,11 +135,12 @@ run: all
 	@echo "=== test_activelook_fsm ==="; ./test_activelook_fsm
 	@echo "=== test_activelook_mode0 ==="; ./test_activelook_mode0
 	@echo "=== test_crs ===";           ./test_crs
+	@echo "=== test_device_state ==="; ./test_device_state
 	@echo "=== test_flysight_ble ==="; $(PYTHON) test_flysight_ble.py
 	@echo "=== test_flysight_app ==="; $(PYTHON) test_flysight_app.py
 
 clean:
 	rm -f $(TESTS)
-	rm -rf build_engo_bind build_al_fsm build_al_mode0 build_crs $(addsuffix .dSYM,$(TESTS)) __pycache__
+	rm -rf build_engo_bind build_al_fsm build_al_mode0 build_crs build_device_state $(addsuffix .dSYM,$(TESTS)) __pycache__
 
 .PHONY: all run clean

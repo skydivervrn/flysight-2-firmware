@@ -40,6 +40,12 @@ void DeviceState_Handle_DS_ControlPointWrite(const uint8_t *payload, uint8_t len
 void DeviceState_Handle_DS_ControlPointNotificationComplete(uint16_t attr_handle);
 
 /**
+ * @brief Write the next buffered control-point trace line to EVENT.CSV, if an
+ *        event log is open and has room. Task context only.
+ */
+void DeviceState_FlushCpLog(void);
+
+/**
  * @brief Initializes the Device State service module.
  */
 void DeviceState_Init(void);

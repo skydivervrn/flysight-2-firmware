@@ -41,10 +41,12 @@ Tests/test_activelook_fsm
 Tests/test_nav_arrow
 Tests/test_comp_corridor
 Tests/test_activelook_mode0
+Tests/test_device_state
 Tests/build_engo_bind/
 Tests/build_crs/
 Tests/build_al_fsm/
 Tests/build_al_mode0/
+Tests/build_device_state/
 Tests/*.dSYM/
 __pycache__/
 

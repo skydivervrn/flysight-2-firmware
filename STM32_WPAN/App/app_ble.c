@@ -266,6 +266,16 @@ uint8_t Advertising_mgr_timer_Id;
 static uint8_t Engo_scan_retry_timer_Id;
 static uint8_t engo_scan_retry_pending = 0;
 
+/* The same one-shot timer also retries a refused aci_gap_terminate of the
+ * glasses link outside ACTIVE (Disconnect_Request). The two uses never overlap:
+ * a scan retry only makes sense with no link, a terminate retry only with one,
+ * and arming the terminate retry cancels any scan retry. "due" marks the
+ * Disconnect_Request run the timer asked for, so a retry whose link has gone in
+ * the meantime does nothing. */
+static volatile uint8_t engo_terminate_retry_pending = 0;
+static volatile uint8_t engo_terminate_retry_due = 0;
+static uint8_t engo_terminate_refused_logged = 0;
+
 /* Advertising callback */
 void (*Adv_Callback)(void) = 0;
 void (*Next_Adv_Callback)(void) = 0;
@@ -338,6 +348,7 @@ static void APP_BLE_UpdateAdvertisingData(APP_BLE_ConnStatus_t NewStatus);
 static int8_t ble_count_bonded_devices(void);
 static void Engo_Scan_Retry_Timer(void);
 static void Schedule_Engo_Scan_Retry(const char *cause, tBleStatus status);
+static void Schedule_Engo_Terminate_Retry(tBleStatus status);
 static void Scan_Request(void);
 static void Connect_Request(void);
 static void Disconnect_Request(void);
@@ -579,6 +590,15 @@ SVCCTL_UserEvtFlowStatus_t SVCCTL_App_Notification(void *p_Pckt)
         BleApplicationContext.EndDevice_Connection_Status[0] = APP_BLE_IDLE;
         BleApplicationContext.connectionHandleEndDevice1 = 0xFFFF;
 
+        /* The link a terminate retry was owed to is gone. */
+        if (engo_terminate_retry_pending)
+        {
+          HW_TS_Stop(Engo_scan_retry_timer_Id);
+          engo_terminate_retry_pending = 0;
+        }
+        engo_terminate_retry_due = 0;
+        engo_terminate_refused_logged = 0;
+
         /* Reason per BT spec: 0x08 supervision timeout (out of range/powered
          * off), 0x13 remote terminated, 0x16 local terminated (self-heal). */
         FS_Log_WriteEventAsync("ENGO disconnected: reason 0x%02X",
@@ -773,8 +793,14 @@ connection_complete_common:
             else
             {
               /* Scan/connect may have completed after ACTIVE teardown. Do not
-               * discover or draw; drop this late link immediately. */
-              (void)aci_gap_terminate(connection_handle, 0x13);
+               * discover or draw; drop this late link immediately. A refusal
+               * must not leave it up (it would hold the glasses' only central
+               * slot into the next ACTIVE session): retry it. */
+              tBleStatus term = aci_gap_terminate(connection_handle, 0x13);
+              if (term != BLE_STATUS_SUCCESS)
+              {
+                Schedule_Engo_Terminate_Retry(term);
+              }
             }
           }
           else
@@ -2113,14 +2139,66 @@ static int8_t ble_count_bonded_devices(void)
  * stay in task context. */
 static void Engo_Scan_Retry_Timer(void)
 {
+  if (engo_terminate_retry_pending)
+  {
+    engo_terminate_retry_pending = 0;
+    engo_terminate_retry_due = 1;
+    UTIL_SEQ_SetTask(1 << CFG_TASK_DISCONN_DEV_1_ID, CFG_SCH_PRIO_0);
+    return;
+  }
   engo_scan_retry_pending = 0;
   if (FS_ActiveLook_IsRunning())
     UTIL_SEQ_SetTask(1 << CFG_TASK_START_SCAN_ID, CFG_SCH_PRIO_0);
 }
 
+/* A refused terminate produces no disconnection event, so nothing would ever
+ * ask again: the link stays up holding the glasses' only central slot, and the
+ * next ACTIVE session can neither find them (they do not advertise while
+ * connected) nor use the link (no discovery runs on it). Ask again every
+ * ENGO_SCAN_RETRY_TIMEOUT until the controller takes it or the link drops. */
+static void Schedule_Engo_Terminate_Retry(tBleStatus status)
+{
+  /* A scan retry is meaningless while a link is up; the timer is needed here. */
+  if (engo_scan_retry_pending)
+  {
+    HW_TS_Stop(Engo_scan_retry_timer_Id);
+    engo_scan_retry_pending = 0;
+  }
+
+  if (!engo_terminate_refused_logged)
+  {
+    engo_terminate_refused_logged = 1;
+    FS_BleDiag_Log("ENGO terminate refused 0x%02X, retrying", (unsigned) status);
+  }
+
+  if (!engo_terminate_retry_pending)
+  {
+    engo_terminate_retry_pending = 1;
+    HW_TS_Start(Engo_scan_retry_timer_Id, ENGO_SCAN_RETRY_TIMEOUT);
+  }
+}
+
+/* The ActiveLook client's ForceDisconnect was refused outside ACTIVE (a late
+ * discovery callback or a setup failure after teardown): the FSM timer that
+ * retries it in ACTIVE has been deleted, so this timer takes over. The retry
+ * runs Disconnect_Request, which terminates the same handle while the link is
+ * still marked CONNECTED. */
+void APP_BLE_Engo_TerminateRefused(uint8_t status)
+{
+  if (BleApplicationContext.EndDevice_Connection_Status[0] == APP_BLE_CONNECTED)
+  {
+    Schedule_Engo_Terminate_Retry(status);
+  }
+}
+
 static void Schedule_Engo_Scan_Retry(const char *cause, tBleStatus status)
 {
   if (!FS_ActiveLook_IsRunning())
+    return;
+
+  /* The timer is busy retrying a terminate, i.e. a link is still up and there
+   * is nothing to scan for. Its disconnection event restarts the scan. */
+  if (engo_terminate_retry_pending)
     return;
 
   if (!engo_scan_retry_pending)
@@ -2293,6 +2371,9 @@ static void Disconnect_Request(void)
 {
   tBleStatus result;
   uint16_t connection_handle = BleApplicationContext.connectionHandleEndDevice1;
+  uint8_t is_retry = engo_terminate_retry_due;
+
+  engo_terminate_retry_due = 0;
 
   APP_DBG_MSG("\r\n\r** DISCONNECT FROM END DEVICE 1 **  \r\n\r");
   if (!FS_ActiveLook_IsRunning() && engo_scan_retry_pending)
@@ -2300,6 +2381,16 @@ static void Disconnect_Request(void)
     HW_TS_Stop(Engo_scan_retry_timer_Id);
     engo_scan_retry_pending = 0;
   }
+
+  /* A terminate retry whose link went away while it waited has nothing to do —
+   * and must not fall into the branches below, which end a discovery or a
+   * connection attempt that may belong to a new ACTIVE session. */
+  if (is_retry &&
+      (BleApplicationContext.EndDevice_Connection_Status[0] != APP_BLE_CONNECTED))
+  {
+    return;
+  }
+
   if (BleApplicationContext.EndDevice_Connection_Status[0] == APP_BLE_CONNECTED)
   {
     result = aci_gap_terminate(connection_handle, 0x13);
@@ -2310,8 +2401,14 @@ static void Disconnect_Request(void)
     }
     else
     {
-      BleApplicationContext.EndDevice_Connection_Status[0] = APP_BLE_IDLE;
+      /* Refused: no disconnection event will come, so the link is still up.
+       * It used to be marked IDLE here anyway, which left a live link that
+       * nothing tracked or retried — holding the glasses' only central slot,
+       * so the next ACTIVE session could not find them. Keep it CONNECTED
+       * (the disconnection event resets it when the link really goes) and
+       * ask again on the backoff timer. */
       APP_DBG_MSG("Failed to send disconnection request. Error: 0x%02X\n", result);
+      Schedule_Engo_Terminate_Retry(result);
     }
   }
   else if (BleApplicationContext.EndDevice_Connection_Status[0] == APP_BLE_CONNECTING)

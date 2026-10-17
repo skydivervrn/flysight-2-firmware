@@ -1346,6 +1346,13 @@ void FS_Log_WriteEvent(const char *format, ...)
 	FS_Log_WriteEventEntry(&entry);
 }
 
+bool FS_Log_EventSlotFree(void)
+{
+	return (logState == LOG_STATE_ACTIVE)
+		&& (enable_flags & FS_LOG_ENABLE_EVENT)
+		&& (eventWrI < eventRdI + EVENT_COUNT);
+}
+
 void FS_Log_WriteEventAsync(const char *format, ...)
 {
 	va_list args;

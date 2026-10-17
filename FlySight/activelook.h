@@ -59,4 +59,10 @@ void FS_ActiveLook_TxPoolAvailable(void);
  * until the next update tick (which may skip if no value changed). */
 void FS_ActiveLook_OnFlowResume(void);
 
+/* Called from activelook_client.c (task context) when aci_gap_terminate is
+ * refused while ACTIVE. Before the HUD is up (discovery / GATT setup) the
+ * terminate is asked again on every AL_Rate tick until the controller accepts
+ * it or the link is gone; once it is up the self-heal watchdogs re-ask. */
+void FS_ActiveLook_OnTerminateRefused(void);
+
 #endif /* ACTIVELOOK_H_ */

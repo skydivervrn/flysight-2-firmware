@@ -22,6 +22,7 @@ tBleStatus FS_ActiveLook_Client_WriteWithoutResp(const uint8_t *data, uint16_t l
 uint32_t   FS_ActiveLook_Client_StopStuckMs(void);
 uint16_t   FS_ActiveLook_Client_WriteFailStreak(void);
 void       FS_ActiveLook_Client_ForceDisconnect(void);
+bool       FS_ActiveLook_Client_TerminatePending(void);
 tBleStatus FS_ActiveLook_Client_EnableBatteryNotifications(void);
 bool       FS_ActiveLook_Client_CanSend(void);
 uint16_t   FS_ActiveLook_Client_GetMTU(void);
