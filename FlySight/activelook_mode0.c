@@ -54,7 +54,7 @@
  * Then the string on the glasses says exactly which build is running — the
  * whole point of this marker (Firmware_Ver in flysight.txt is unreliable). */
 #ifndef HUD_VERSION
-#define HUD_VERSION "0.0.48"
+#define HUD_VERSION "0.0.49"
 #endif
 
 /* Fonts VERIFIED on ENGO 3 (this unit) via Mac BLE bench 2026-07-20 — fontList
@@ -145,35 +145,44 @@ static double LN_InvGlideRatio(const FS_GNSS_Data_t *d) {
 static double LN_TotalSpeed(const FS_GNSS_Data_t *d) {
     return (double)d->speed / 100.0; // cm/s to m/s, raw (no SAS)
 }
-static double LN_DirToDest(const FS_GNSS_Data_t *d) {
-    const FS_Config_Data_t *cfg = FS_Config_Get();
-    // Check if destination is set and within reasonable range if needed
-    if ((calcDistance(d->lat, d->lon, cfg->lat, cfg->lon) < cfg->max_dist) || (cfg->max_dist == 0)) {
-         return (double)calcDirection(d->lat, d->lon, cfg->lat, cfg->lon, d->heading);
-    }
-    return 0.0; // Indicate no destination or out of range
-}
-static double LN_DistToDest(const FS_GNSS_Data_t *d) {
-    const FS_Config_Data_t *cfg = FS_Config_Get();
-    return (double)calcDistance(d->lat, d->lon, cfg->lat, cfg->lon); // in meters
-}
-
-/* --- The navigation arrow (field 15) -------------------------------------
- *
- * Its own direction, deliberately NOT LN_DirToDest: that one answers 0.0
- * beyond Max_Dist, and an arrow cannot say "I don't know" by pointing
- * straight ahead. See FS_HUD_FIELD_NAV_ARROW in hud_layout.h. */
-static int NavArrowDeg(const FS_GNSS_Data_t *d) {
-    const FS_Config_Data_t *cfg = FS_Config_Get();
-    return calcDirection(d->lat, d->lon, cfg->lat, cfg->lon, d->heading);
-}
-
 /* Exactly 0,0 is how the card says "no destination". FS_Config_Init leaves
  * Lat/Lon at zero, and a value the parser rejects leaves them there too — so
  * zero means "nobody has set one", not "steer for the Gulf of Guinea". */
 static bool NavDestSet(void) {
     const FS_Config_Data_t *cfg = FS_Config_Get();
     return !(cfg->lat == 0 && cfg->lon == 0);
+}
+
+/* Fields 5 and 6 answer NAN for "no destination", and the render loop draws
+ * that as "----", the mark a GPS-derived field shows before the fix. NAN,
+ * because the value has to lie outside every real reading: field 5 is a
+ * relative bearing centred on 0, and 0 is exactly the reading a wearer acts on
+ * — "dead on course". It used to return 0.0 for an unset destination and for
+ * one beyond Max_Dist, and the panel drew both as that.
+ *
+ * The rule is the navigation arrow's (field 15): a destination is either set
+ * or not, and a set one is good at any range, so Max_Dist no longer blanks
+ * these two either. One rule for the three fields that point at the same
+ * place, so they cannot contradict each other on one panel. */
+static double LN_DirToDest(const FS_GNSS_Data_t *d) {
+    const FS_Config_Data_t *cfg = FS_Config_Get();
+    if (!NavDestSet()) return NAN;
+    return (double)calcDirection(d->lat, d->lon, cfg->lat, cfg->lon, d->heading);
+}
+static double LN_DistToDest(const FS_GNSS_Data_t *d) {
+    const FS_Config_Data_t *cfg = FS_Config_Get();
+    if (!NavDestSet()) return NAN;
+    return (double)calcDistance(d->lat, d->lon, cfg->lat, cfg->lon); // in meters
+}
+
+/* --- The navigation arrow (field 15) -------------------------------------
+ *
+ * The same bearing as LN_DirToDest, as an int for the arrow's quantiser. The
+ * caller has already checked NavDestSet(), so there is no NAN to handle. See
+ * FS_HUD_FIELD_NAV_ARROW in hud_layout.h. */
+static int NavArrowDeg(const FS_GNSS_Data_t *d) {
+    const FS_Config_Data_t *cfg = FS_Config_Get();
+    return calcDirection(d->lat, d->lon, cfg->lat, cfg->lon, d->heading);
 }
 
 /* Quantise the arrow before comparing it against the last frame. Heading
@@ -960,6 +969,16 @@ void FS_ActiveLook_Mode0_Update(void)
 
         FS_HudUnitConv_t conv = FS_HudLayout_UnitConv(entry->qty, el->units);
         double v = entry->fn(gnss) * conv.multiplier;
+
+        if (isnan(v)) {
+            /* A fix, and still no answer: today only fields 5 and 6 with no
+             * destination on the card. The same "----" as a missing fix on
+             * purpose — the wearer already knows that mark means "no
+             * reading". qty[i] stays FS_HUD_QTY_NONE, so no unit is drawn
+             * beside the dashes. */
+            snprintf(text[i], AL_MODE0_MAX_TEXT, "----");
+            continue;
+        }
 
         /* The value alone, always — byte for byte what v0.0.18 wrote with
          * AL_Unit_Show off. Since v0.0.19 the unit is no longer part of this
