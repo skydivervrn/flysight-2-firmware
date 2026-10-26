@@ -71,11 +71,11 @@
  * 5 and 6 say the same two things as numbers; this says them as a picture,
  * which is what a pilot under canopy can take in without doing arithmetic.
  *
- * It deliberately IGNORES Max_Dist: the bearing is good at any range, so the
- * arrow draws at any range, and with no destination on the card it says
- * NO LZ. Since HUD 0.0.49 fields 5 and 6 follow the same rule ("----" with no
- * destination, a real reading at any range); before that, field 5 answered
- * 0.0 — "dead ahead" — both without a destination and beyond Max_Dist. */
+ * It deliberately IGNORES Max_Dist. Field 5 stops computing a direction beyond
+ * that limit and returns 0.0, which renders as "dead ahead" — indistinguishable
+ * from being on course, and the one failure mode you must not have in a shape
+ * whose whole job is to point. The bearing is good at any range, so the arrow
+ * draws at any range. */
 #define FS_HUD_FIELD_NAV_ARROW  15
 
 #define FS_HUD_FIELD_INFO       100 /* the status line (battery/sats/version)  */

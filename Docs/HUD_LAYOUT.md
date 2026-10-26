@@ -100,11 +100,10 @@ It needs `Lat` / `Lon` on the card, and shows an empty frame with `----`
 under it when there is no fix, no fresh sample, or no destination set. An
 arrow that pointed somewhere anyway would be a confident lie.
 
-**It ignores `Max_Dist` on purpose.** The bearing is good at any range, so the
-arrow draws at any range. Since HUD 0.0.49 fields 5 and 6 follow the same rule:
-`----` when no destination is set, a real reading at any range. Before that,
-field 5 answered 0.0 — "dead ahead", indistinguishable from being on course —
-both without a destination and past `Max_Dist`.
+**It ignores `Max_Dist` on purpose.** Field 5 stops computing a direction past
+that limit and answers 0.0, which draws as "dead ahead" — indistinguishable
+from being on course. The bearing itself is good at any range, so the arrow
+draws at any range.
 
 The shape lives in `FlySight/nav_arrow.c`, apart from the renderer and with no
 BLE in it, so it can be checked on the host (`Tests/test_nav_arrow.c`). The

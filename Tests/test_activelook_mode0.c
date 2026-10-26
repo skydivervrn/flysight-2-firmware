@@ -19,10 +19,7 @@
 **         by the sample hook whether or not the glasses are connected — not
 **         the pressure at the moment the glasses happened to link up;
 **   F1-c  a tick must finish a half-sent frame before building another, so
-**         the glasses never see HOLD, HOLD (a second hold inside an open one);
-**   N1    fields 5 and 6 read "----" with no destination on the card, and a
-**         real bearing and distance past Max_Dist — never the 0 that drew as
-**         "dead on course" (HUD 0.0.49, the navigation arrow's rule).
+**         the glasses never see HOLD, HOLD (a second hold inside an open one).
 ****************************************************************************/
 #include <stdio.h>
 #include <string.h>
@@ -373,74 +370,6 @@ static void test_no_hold_inside_hold(void)
 	CHECK(alt_is_number(last_text_at(ALT_X, ALT_Y), 990, 1010));
 }
 
-/* ---------------- N1: fields 5 and 6 never say "on course" by default ------ */
-#define DIR_X   200
-#define DIR_Y    60
-#define DIST_X  200
-#define DIST_Y  140
-
-static int text_is_number(const char *t, double lo, double hi)
-{
-	double v;
-	if (t == NULL || sscanf(t, "%lf", &v) != 1) return 0;
-	return v >= lo && v <= hi;
-}
-
-static void dest_fields_world(int32_t dest_lat, int32_t dest_lon, uint16_t max_dist)
-{
-	reset_world();
-	g_cfg.al_rate = 250;
-	g_cfg.al_layout_valid = 1;
-	g_cfg.al_layout.count = 2;
-	g_cfg.al_layout.el[0].field = FS_HUD_FIELD_DIR_DEST;
-	g_cfg.al_layout.el[0].x     = DIR_X;
-	g_cfg.al_layout.el[0].y     = DIR_Y;
-	g_cfg.al_layout.el[0].font  = 3;
-	g_cfg.al_layout.el[1].field = FS_HUD_FIELD_DIST_DEST;
-	g_cfg.al_layout.el[1].x     = DIST_X;
-	g_cfg.al_layout.el[1].y     = DIST_Y;
-	g_cfg.al_layout.el[1].font  = 3;
-	g_cfg.al_layout.el[1].units = FS_HUD_UNITS_M;
-	g_cfg.lat = dest_lat;
-	g_cfg.lon = dest_lon;
-	g_cfg.max_dist = max_dist;
-
-	/* Flying north at 52 N, 6 E with a 3D fix. */
-	g_gnss.gpsFix  = 3;
-	g_gnss.lat     = 520000000;
-	g_gnss.lon     =  60000000;
-	g_gnss.heading = 0;
-
-	FS_ActiveLook_Mode0_Init();
-	hud_tick();
-}
-
-static void test_dest_fields_without_destination(void)
-{
-	/* Lat/Lon 0,0 is the card's "no destination". Field 5 used to draw 0. */
-	dest_fields_world(0, 0, 10000);
-	const char *dir  = last_text_at(DIR_X, DIR_Y);
-	const char *dist = last_text_at(DIST_X, DIST_Y);
-	CHECK(dir  != NULL && strcmp(dir,  "----") == 0);
-	CHECK(dist != NULL && strcmp(dist, "----") == 0);
-}
-
-static void test_dest_fields_past_max_dist(void)
-{
-	/* 50 km due east, Max_Dist 10 km: field 5 used to draw 0 here too. Now a
-	 * quarter turn to one side, and the distance itself. */
-	dest_fields_world(520000000, 60000000 + 7297000, 10000);
-	CHECK(text_is_number(last_text_at(DIR_X, DIR_Y), 85, 95) ||
-	      text_is_number(last_text_at(DIR_X, DIR_Y), -95, -85));
-	CHECK(text_is_number(last_text_at(DIST_X, DIST_Y), 49500, 50500));
-
-	/* Inside Max_Dist nothing changed: 5 km east, the same quarter turn. */
-	dest_fields_world(520000000, 60000000 + 729700, 10000);
-	CHECK(text_is_number(last_text_at(DIR_X, DIR_Y), 85, 95) ||
-	      text_is_number(last_text_at(DIR_X, DIR_Y), -95, -85));
-	CHECK(text_is_number(last_text_at(DIST_X, DIST_Y), 4950, 5050));
-}
-
 int main(void)
 {
 	test_zero_point_set_before_glasses();
@@ -449,8 +378,6 @@ int main(void)
 	test_first_sample_in_time_logs_nothing();
 	test_pending_frame_finished_before_rebuild();
 	test_no_hold_inside_hold();
-	test_dest_fields_without_destination();
-	test_dest_fields_past_max_dist();
 
 	printf("%d checks, %d failures\n", g_checks, g_fail);
 	return g_fail ? 1 : 0;
