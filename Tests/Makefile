@@ -1,6 +1,8 @@
 # tests/Makefile
 CC = gcc
-CFLAGS = -Wall -Wextra -std=c99 -g
+# _DEFAULT_SOURCE: glibc hides M_PI and strnlen under -std=c99 (CI runs on
+# Linux); macOS shows them anyway, so a Mac run alone cannot catch this.
+CFLAGS = -Wall -Wextra -std=c99 -D_DEFAULT_SOURCE -g
 
 # The Mac-side BLE tools' host tests: the flasher (Tools/flysight_ble.py) and
 # the long-lived app around it (Tools/flysight_app.py). Pure logic only — CRS
