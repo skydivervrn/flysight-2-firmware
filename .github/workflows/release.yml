@@ -86,14 +86,21 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          cat > notes.md <<'EOF'
-          Two readability fixes, both from looking at the glasses.
-
-          **The lane rungs are three pixels thick.** They were one -- a hairline, legible on a bench and thin against sky. A rung is now a filled 3 px box about its own column with 9 px of gap beside it, so it is still a ladder to be counted rather than a bar to be read. Pitch, rung count and the 25 m each rung is worth are unchanged, and so is the cost of the frame: thirteen packets, drawn with the same opcode the centre bar has used since v0.0.40.
-
-          **The distance under the navigation arrow shows tenths of a kilometre.** Whole kilometres put an entire drop zone on one reading: "2" for the minute it takes to cross a kilometre, then a jump of a whole unit, with nothing in between to steer by. Kilometres and miles now always carry at least one decimal whatever `AL_Dec` says on the card, and a card asking for two still gets two. Metres and feet go the other way and are always whole -- this caption is the one string on the panel carrying its unit inside it, so a decimal there spends 15 px of the width beside the arrow to name half a metre of range. Neither needs an edit to an existing layout.
-
-          Both are covered by host tests and neither has been seen on glasses. The full-panel lane indicator added in v0.0.42 has still not been flown, nor has the Validation Window logic from v0.0.43.
+          # The release text is the annotated tag's message, written with the
+          # release it describes; only the install paragraph below is common to
+          # every release. It used to be inlined here and was last edited for
+          # v0.0.44, so v0.0.45 and v0.0.46 went out describing v0.0.44.
+          git fetch --force origin "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
+          test "$(git cat-file -t "$GITHUB_REF_NAME")" = tag || {
+            echo "$GITHUB_REF_NAME is not an annotated tag, so there is no release text"
+            exit 1
+          }
+          git for-each-ref "refs/tags/$GITHUB_REF_NAME" --format='%(contents:body)' > notes.md
+          grep -q '[^[:space:]]' notes.md || {
+            echo "The message of $GITHUB_REF_NAME has no body, so there is no release text"
+            exit 1
+          }
+          cat >> notes.md <<'EOF'
 
           Choose the file matching the `Pubkey_X` batch in `FLYSIGHT.TXT`, rename it to `APP.SFB`, and install it using Groundrush, the web flasher, or the orange-light USB bootloader. The wrong batch is safely ignored. Batches B2-B9 are covered, plus a `DEV` image for early units (first ~500, `Pubkey_X` all f's) once FlySight has switched them to its dev key.
           EOF
